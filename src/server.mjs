@@ -676,7 +676,7 @@ async function handleDeviceCode(req, res) {
   sendJson(res, 200, {
     device_code: device.deviceCode,
     user_code: device.userCode,
-    verification_uri_complete: `${publicBaseUrl}/activate?user_code=${encodeURIComponent(device.userCode)}`,
+    verification_uri_complete: `/activate?user_code=${encodeURIComponent(device.userCode)}`,
     verification_uri: `${publicBaseUrl}/activate`,
     expires_in: Math.floor((device.expiresAt - Date.now()) / 1000),
     interval: device.interval,
