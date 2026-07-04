@@ -17,7 +17,7 @@ It is intentionally server-side: user auth, credit accounting, model routing, an
 - `POST /v1/chat/completions`
 - `POST /admin/credits/grant` optional local admin credit grant endpoint, disabled unless `YOURSERVICE_ADMIN_TOKEN` is set
 
-`/v1/chat/completions` supports OpenAI-style non-streaming and SSE streaming responses. By default it uses a deterministic mock model response and a JSON-file-backed development ledger so the desktop/plugin integration can be tested without provider keys. Set `YOURSERVICE_UPSTREAM_MODE=openai` plus the `UPSTREAM_OPENAI_*` variables to forward requests to an OpenAI-compatible upstream while keeping provider keys server-side.
+`/v1/chat/completions` supports OpenAI-style non-streaming and SSE streaming responses. By default it uses a deterministic mock model response and a JSON-file-backed development ledger so the desktop/plugin integration can be tested without provider keys. Set `YOURSERVICE_UPSTREAM_MODE=openai` plus the `UPSTREAM_OPENAI_*` variables to forward requests to an OpenAI-compatible upstream while keeping provider keys server-side. Set `YOURSERVICE_UPSTREAM_MODE=codex-responses` when the upstream is a Codex/OpenAI Responses-compatible `/v1/responses` proxy such as the existing `llms.ai.kr/chatgpt/v1` service.
 
 ## Quick start
 
@@ -82,16 +82,19 @@ Common real-host environment variables:
 | `PORT` | Platform-injected port. If set, it overrides `YOURSERVICE_GATEWAY_PORT`. |
 | `YOURSERVICE_GATEWAY_HOST` | Use `0.0.0.0` in containers/cloud hosts. |
 | `YOURSERVICE_PUBLIC_BASE_URL` | Public HTTPS URL used in device auth verification links. |
+| `YOURSERVICE_BASE_PATH` | Optional path prefix when publishing under a shared domain, e.g. `/opencode-gateway`. |
 | `YOURSERVICE_DATA_PATH` | JSON ledger path when `YOURSERVICE_STATE_BACKEND=json`. |
 | `YOURSERVICE_STATE_BACKEND` | `json` for local development, `postgres` for deployed persistence. |
 | `DATABASE_URL` | PostgreSQL connection string when `YOURSERVICE_STATE_BACKEND=postgres`. |
 | `YOURSERVICE_DEV_TOKENS` | Temporary token/credit seed list for MVP testing. Replace with real auth-issued accounts later. |
 | `YOURSERVICE_ADMIN_TOKEN` | Server-side admin token for manual credit grants. Keep secret. |
-| `YOURSERVICE_UPSTREAM_MODE` | `mock` for local validation or `openai` for OpenAI-compatible provider proxying. |
+| `YOURSERVICE_UPSTREAM_MODE` | `mock` for local validation, `openai` for `/chat/completions`, or `codex-responses` for a streaming `/responses` upstream. |
 | `UPSTREAM_OPENAI_API_KEY` | Provider key stored only on the server. |
 | `UPSTREAM_OPENAI_FAST_MODEL` / `UPSTREAM_OPENAI_PRO_MODEL` | Provider model IDs mapped behind YourService `fast` / `pro`. |
 
 `render.yaml` is included as a first deploy blueprint. After connecting the GitHub repo to Render, set the `sync: false` secrets in the Render dashboard, then run the production smoke script against the issued URL.
+
+`vercel.json` and `api/gateway.mjs` are also included for preview deployments through Vercel's Node serverless runtime. Vercel is useful for quick HTTPS smoke tests, but production credit accounting should still use `YOURSERVICE_STATE_BACKEND=postgres`; otherwise the serverless `/tmp` JSON file is only warm-instance local state.
 
 ## Production auth, billing, and DB integration
 
@@ -143,7 +146,18 @@ $env:UPSTREAM_OPENAI_PRO_MODEL = "gpt-4.1"
 node src/server.mjs
 ```
 
-The upstream call is intentionally centralized in `C:\Users\USER\Documents\GitHub\CodexShare\opencode-gateway\src\upstream.mjs`. The desktop app only receives a YourService token; provider API keys stay on the server. In openai mode the gateway reserves credits from the requested max output before sending the provider request, forwards the request as non-streaming, normalizes the response back to YourService model IDs, and debits the actual estimated usage capped by the reservation. Streaming clients still receive SSE from the gateway, but the current MVP streams the completed upstream content rather than doing true provider streaming passthrough.
+For a Codex-native Responses proxy such as the existing VPS `llms.ai.kr/chatgpt/v1` service:
+
+```powershell
+$env:YOURSERVICE_UPSTREAM_MODE = "codex-responses"
+$env:UPSTREAM_OPENAI_BASE_URL = "https://llms.ai.kr/chatgpt/v1"
+$env:UPSTREAM_OPENAI_API_KEY = "dummy"
+$env:UPSTREAM_OPENAI_FAST_MODEL = "gpt-5.3-codex-spark"
+$env:UPSTREAM_OPENAI_PRO_MODEL = "gpt-5.5"
+node src/server.mjs
+```
+
+The upstream call is intentionally centralized in `C:\Users\USER\Documents\GitHub\CodexShare\opencode-gateway\src\upstream.mjs`. The desktop app only receives a YourService token; provider API keys stay on the server. In `openai` mode the gateway reserves credits from the requested max output before sending the provider request, forwards the request as non-streaming, normalizes the response back to YourService model IDs, and debits the actual estimated usage capped by the reservation. In `codex-responses` mode the gateway converts Chat Completions messages into Responses input items, consumes the upstream SSE stream server-side, normalizes it back to Chat Completions, then applies the same credit debit path. Streaming clients still receive SSE from the gateway, but the current MVP streams the completed upstream content rather than doing true provider streaming passthrough.
 
 ## MVP hardening now included
 
@@ -238,6 +252,6 @@ That harness starts a temporary gateway, runs `opencode console login` through t
 
 1. Replace the Postgres JSONB snapshot backend with row-level writes to the normalized tables in `schema/postgres.sql` before high-concurrency multi-instance deployment.
 2. Add explicit reserve/commit/release rows for true provider streaming and mid-stream failure refunds.
-3. Upgrade `src/upstream.mjs` from non-streaming OpenAI-compatible forwarding to true streaming passthrough and provider-specific adapters where needed.
+3. Upgrade `src/upstream.mjs` from gateway-buffered upstream calls to true streaming passthrough and add more provider-specific adapters where needed.
 4. Replace the local approval page with real user login.
 5. Add durable rate limits, structured audit logs, and billing/webhook integration.

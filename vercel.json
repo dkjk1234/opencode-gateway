@@ -1,0 +1,15 @@
+{
+  "version": 2,
+  "functions": {
+    "api/gateway.mjs": {
+      "memory": 1024,
+      "maxDuration": 60
+    }
+  },
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "/api/gateway.mjs"
+    }
+  ]
+}

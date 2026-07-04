@@ -11,8 +11,14 @@ import { boundedOutputTokens, callOpenAICompatibleChat, resolveChatUpstream } fr
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const host = process.env.YOURSERVICE_GATEWAY_HOST || "127.0.0.1"
 const port = Number(process.env.PORT || process.env.YOURSERVICE_GATEWAY_PORT || 8788)
-const publicBaseUrl = (process.env.YOURSERVICE_PUBLIC_BASE_URL || `http://${host}:${port}`).replace(/\/$/, "")
-const statePath = process.env.YOURSERVICE_DATA_PATH || path.resolve(__dirname, "..", ".data", "gateway-state.json")
+const basePath = normalizeBasePath(process.env.YOURSERVICE_BASE_PATH || "")
+const publicBaseUrl = (
+  process.env.YOURSERVICE_PUBLIC_BASE_URL ||
+  `${process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : `http://${host}:${port}`}${basePath}`
+).replace(/\/$/, "")
+const statePath =
+  process.env.YOURSERVICE_DATA_PATH ||
+  (process.env.VERCEL ? "/tmp/yourservice-opencode-gateway-state.json" : path.resolve(__dirname, "..", ".data", "gateway-state.json"))
 const stateBackend = process.env.YOURSERVICE_STATE_BACKEND || "json"
 const seedTokens = process.env.YOURSERVICE_DEV_TOKENS || "dev-token:100000"
 const allowAnonDev = process.env.YOURSERVICE_ALLOW_ANON_DEV === "true"
@@ -55,6 +61,19 @@ function sendHtml(res, status, html) {
     "access-control-allow-origin": "*",
   })
   res.end(html)
+}
+
+function normalizeBasePath(value) {
+  const raw = String(value || "").trim()
+  if (!raw || raw === "/") return ""
+  return `/${raw.replace(/^\/+|\/+$/g, "")}`
+}
+
+function stripBasePath(pathname) {
+  if (!basePath) return pathname
+  if (pathname === basePath) return "/"
+  if (pathname.startsWith(`${basePath}/`)) return pathname.slice(basePath.length) || "/"
+  return null
 }
 
 function redirect(res, location) {
@@ -657,7 +676,7 @@ async function handleDeviceCode(req, res) {
   sendJson(res, 200, {
     device_code: device.deviceCode,
     user_code: device.userCode,
-    verification_uri_complete: `/activate?user_code=${encodeURIComponent(device.userCode)}`,
+    verification_uri_complete: `${publicBaseUrl}/activate?user_code=${encodeURIComponent(device.userCode)}`,
     verification_uri: `${publicBaseUrl}/activate`,
     expires_in: Math.floor((device.expiresAt - Date.now()) / 1000),
     interval: device.interval,
@@ -840,7 +859,7 @@ async function handleStripeWebhook(req, res) {
 function activationPage(url) {
   const userCode = url.searchParams.get("user_code") || ""
   const oauthBlock = oauthConfig.enabled
-    ? `<p><a href="/auth/oauth/start?user_code=${encodeURIComponent(userCode)}">Continue with OAuth login</a></p>`
+    ? `<p><a href="${publicBaseUrl}/auth/oauth/start?user_code=${encodeURIComponent(userCode)}">Continue with OAuth login</a></p>`
     : ""
   return `<!doctype html>
 <html><head><meta charset="utf-8"><title>YourService device login</title></head>
@@ -848,7 +867,7 @@ function activationPage(url) {
 <h1>YourService device login</h1>
 <p>Approve OpenCode access for code <strong>${escapeHtml(userCode)}</strong>.</p>
 ${oauthBlock}
-<form method="post" action="/activate?user_code=${encodeURIComponent(userCode)}">
+<form method="post" action="${publicBaseUrl}/activate?user_code=${encodeURIComponent(userCode)}">
   <input type="hidden" name="user_code" value="${escapeHtml(userCode)}" />
   <label>Account token <input name="token" value="" placeholder="dev-token" style="width: 280px" /></label>
   <button type="submit">Approve</button>
@@ -861,9 +880,12 @@ function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char])
 }
 
-const server = http.createServer(async (req, res) => {
+export const gatewayHandler = async (req, res) => {
   try {
     const url = new URL(req.url || "/", `http://${req.headers.host || `${host}:${port}`}`)
+    const routedPath = stripBasePath(url.pathname)
+    if (routedPath === null) return sendError(res, 404, "not_found", `No route for ${req.method} ${url.pathname}`)
+    url.pathname = routedPath
 
     if (req.method === "OPTIONS") return sendJson(res, 204, {})
 
@@ -949,10 +971,14 @@ const server = http.createServer(async (req, res) => {
     console.error(error)
     sendError(res, 500, "internal_error", error?.message || "Internal error")
   }
-})
+}
 
-server.listen(port, host, () => {
-  console.log(`YourService OpenCode gateway listening on http://${host}:${port}`)
-  console.log(`State backend: ${store.backend} (${store.description || statePath})`)
-})
+export const server = http.createServer(gatewayHandler)
+
+if (!process.env.VERCEL && process.env.YOURSERVICE_START_SERVER !== "false") {
+  server.listen(port, host, () => {
+    console.log(`YourService OpenCode gateway listening on http://${host}:${port}`)
+    console.log(`State backend: ${store.backend} (${store.description || statePath})`)
+  })
+}
 

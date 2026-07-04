@@ -1,5 +1,6 @@
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 const DEFAULT_TIMEOUT_MS = 120_000
+const TEXT_DECODER = new TextDecoder()
 
 export class UpstreamConfigurationError extends Error {
   constructor(message) {
@@ -30,9 +31,26 @@ export function upstreamMode() {
 export function resolveChatUpstream(model) {
   const mode = upstreamMode()
   if (!mode || mode === "mock") return { mode: "mock" }
+  if (mode === "codex" || mode === "codex-responses" || mode === "responses" || mode === "openai-responses") {
+    const upstreamModel = process.env[model.upstreamModelEnv]?.trim() || process.env.UPSTREAM_OPENAI_MODEL?.trim()
+    if (!upstreamModel) {
+      throw new UpstreamConfigurationError(
+        `${model.upstreamModelEnv} or UPSTREAM_OPENAI_MODEL is required for YourService model '${model.id}'.`,
+      )
+    }
+
+    return {
+      mode: "responses",
+      baseURL: trimTrailingSlashes(process.env.UPSTREAM_OPENAI_BASE_URL || process.env.UPSTREAM_RESPONSES_BASE_URL || DEFAULT_OPENAI_BASE_URL),
+      apiKey: process.env.UPSTREAM_OPENAI_API_KEY?.trim() || process.env.UPSTREAM_RESPONSES_API_KEY?.trim() || "dummy",
+      model: upstreamModel,
+      timeoutMs: positiveInteger(process.env.UPSTREAM_OPENAI_TIMEOUT_MS, DEFAULT_TIMEOUT_MS),
+    }
+  }
+
   if (mode !== "openai" && mode !== "openai-compatible") {
     throw new UpstreamConfigurationError(
-      `Unsupported YOURSERVICE_UPSTREAM_MODE '${mode}'. Use 'mock' or 'openai'.`,
+      `Unsupported YOURSERVICE_UPSTREAM_MODE '${mode}'. Use 'mock', 'openai', or 'codex-responses'.`,
     )
   }
 
@@ -64,6 +82,8 @@ export function boundedOutputTokens(body, model) {
 }
 
 export async function callOpenAICompatibleChat(upstream, body, model, requestId) {
+  if (upstream.mode === "responses") return callResponsesCompatibleChat(upstream, body, model, requestId)
+
   const endpoint = `${upstream.baseURL}/chat/completions`
   const upstreamBody = normalizeUpstreamBody(body, upstream, model)
   const headers = {
@@ -105,6 +125,178 @@ export async function callOpenAICompatibleChat(upstream, body, model, requestId)
     payload,
     content: extractAssistantContent(payload),
   }
+}
+
+async function callResponsesCompatibleChat(upstream, body, model, requestId) {
+  const endpoint = `${upstream.baseURL}/responses`
+  const upstreamBody = normalizeResponsesBody(body, upstream)
+  const headers = {
+    authorization: `Bearer ${upstream.apiKey}`,
+    accept: "text/event-stream",
+    "content-type": "application/json",
+    "x-yourservice-request-id": requestId,
+  }
+
+  let response
+  try {
+    response = await fetch(endpoint, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(upstreamBody),
+      signal: AbortSignal.timeout(upstream.timeoutMs),
+    })
+  } catch (error) {
+    throw new UpstreamRequestError(`Failed to reach responses upstream provider: ${error.message}`)
+  }
+
+  if (!response.ok) {
+    const text = await response.text()
+    const payload = parseJsonPayload(text)
+    throw new UpstreamRequestError(upstreamErrorMessage(payload, response.status), {
+      status: response.status,
+      payload: sanitizeUpstreamPayload(payload),
+    })
+  }
+
+  const { content, finalResponse, events } = await readResponsesEventStream(response)
+  const usage = normalizeResponsesUsage(finalResponse?.usage, body, content)
+  const payload = {
+    id: finalResponse?.id || requestId,
+    object: "chat.completion",
+    model: finalResponse?.model || upstream.model,
+    choices: [
+      {
+        index: 0,
+        message: { role: "assistant", content },
+        finish_reason: finalResponse?.incomplete_details ? "length" : "stop",
+      },
+    ],
+    usage,
+    upstream_response: {
+      id: finalResponse?.id,
+      status: finalResponse?.status,
+      object: finalResponse?.object,
+      events,
+    },
+  }
+
+  return { payload, content }
+}
+
+function normalizeResponsesBody(body, upstream) {
+  return {
+    model: upstream.model,
+    input: chatMessagesToResponsesInput(body?.messages || []),
+    stream: true,
+    store: false,
+  }
+}
+
+function chatMessagesToResponsesInput(messages) {
+  const normalized = []
+  for (const message of Array.isArray(messages) ? messages : []) {
+    const role = normalizeResponsesRole(message?.role)
+    const content = chatContentToResponsesContent(message?.content, role)
+    if (content.length > 0) normalized.push({ role, content })
+  }
+  if (normalized.length === 0) {
+    normalized.push({ role: "user", content: [{ type: "input_text", text: "" }] })
+  }
+  return normalized
+}
+
+function normalizeResponsesRole(role) {
+  if (role === "assistant") return "assistant"
+  return "user"
+}
+
+function chatContentToResponsesContent(content, role) {
+  const type = role === "assistant" ? "output_text" : "input_text"
+  if (typeof content === "string") return content ? [{ type, text: content }] : []
+  if (!Array.isArray(content)) return content == null ? [] : [{ type, text: String(content) }]
+  return content
+    .map((part) => {
+      if (typeof part === "string") return { type, text: part }
+      if (part?.type === "text" && typeof part.text === "string") return { type, text: part.text }
+      if (part?.type === "input_text" && typeof part.text === "string") return { type: "input_text", text: part.text }
+      if (part?.type === "output_text" && typeof part.text === "string") return { type: "output_text", text: part.text }
+      if (typeof part?.text === "string") return { type, text: part.text }
+      if (typeof part?.content === "string") return { type, text: part.content }
+      return null
+    })
+    .filter(Boolean)
+}
+
+async function readResponsesEventStream(response) {
+  if (!response.body) {
+    throw new UpstreamRequestError("Responses upstream returned an empty stream.", { status: response.status })
+  }
+
+  const reader = response.body.getReader()
+  let buffer = ""
+  const deltas = []
+  let doneText = ""
+  let finalResponse = null
+  const events = []
+
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += TEXT_DECODER.decode(value, { stream: true })
+    const lines = buffer.split(/\r?\n/)
+    buffer = lines.pop() || ""
+    for (const line of lines) {
+      const data = line.startsWith("data:") ? line.slice(5).trim() : ""
+      if (!data || data === "[DONE]") continue
+      const event = parseJsonPayload(data)
+      if (!event || typeof event !== "object") continue
+      if (event.type) events.push(event.type)
+      if (event.type === "response.output_text.delta" && typeof event.delta === "string") deltas.push(event.delta)
+      if (event.type === "response.output_text.done" && typeof event.text === "string") doneText = event.text
+      if (event.type === "response.error" || event.type === "error") {
+        throw new UpstreamRequestError(event?.error?.message || event?.message || "Responses upstream returned an error.", {
+          payload: sanitizeUpstreamPayload(event),
+        })
+      }
+      if (event.response && typeof event.response === "object") finalResponse = event.response
+    }
+  }
+
+  if (buffer.trim().startsWith("data:")) {
+    const event = parseJsonPayload(buffer.trim().slice(5).trim())
+    if (event?.response && typeof event.response === "object") finalResponse = event.response
+  }
+
+  const content = deltas.join("") || doneText || extractResponsesText(finalResponse)
+  return { content, finalResponse, events: [...new Set(events)] }
+}
+
+function extractResponsesText(response) {
+  const chunks = []
+  for (const item of Array.isArray(response?.output) ? response.output : []) {
+    for (const part of Array.isArray(item?.content) ? item.content : []) {
+      if (typeof part?.text === "string") chunks.push(part.text)
+      else if (typeof part?.content === "string") chunks.push(part.content)
+    }
+  }
+  return chunks.join("")
+}
+
+function normalizeResponsesUsage(usage, body, content) {
+  const promptTokens = Number(usage?.prompt_tokens ?? usage?.input_tokens)
+  const completionTokens = Number(usage?.completion_tokens ?? usage?.output_tokens)
+  const input = Number.isSafeInteger(promptTokens) && promptTokens > 0 ? promptTokens : estimateFallbackTokens(body?.messages || "")
+  const output = Number.isSafeInteger(completionTokens) && completionTokens > 0 ? completionTokens : estimateFallbackTokens(content)
+  return {
+    prompt_tokens: input,
+    completion_tokens: output,
+    total_tokens: input + output,
+  }
+}
+
+function estimateFallbackTokens(value) {
+  const text = typeof value === "string" ? value : JSON.stringify(value ?? "")
+  return Math.max(1, Math.ceil(text.length / 4))
 }
 
 function normalizeUpstreamBody(body, upstream, model) {
