@@ -3,7 +3,9 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto"
 import { calculateCredits, estimateTokens, getModel, hasModel, listModels, providerModelConfig } from "./models.mjs"
+import { completeOAuthCallback, createOAuthAuthorization, oauthConfigFromEnv } from "./oauth.mjs"
 import { GatewayState } from "./state.mjs"
+import { stripeEventToCreditGrant, stripeWebhookConfigFromEnv, verifyStripeSignature } from "./stripe.mjs"
 import { boundedOutputTokens, callOpenAICompatibleChat, resolveChatUpstream } from "./upstream.mjs"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -19,6 +21,8 @@ const maxAdminCreditGrant = positiveIntegerFromEnv(process.env.YOURSERVICE_MAX_C
 const maxBodyBytes = positiveIntegerFromEnv(process.env.YOURSERVICE_MAX_BODY_BYTES, 1_000_000)
 const rateLimitDisabled = process.env.YOURSERVICE_RATE_LIMIT_DISABLED === "true"
 const rateLimitPerMinute = positiveIntegerFromEnv(process.env.YOURSERVICE_RATE_LIMIT_PER_MINUTE, 120)
+const oauthConfig = oauthConfigFromEnv(process.env)
+const stripeWebhookConfig = stripeWebhookConfigFromEnv(process.env)
 
 const store = await GatewayState.open(statePath, seedTokens)
 const rateLimitBuckets = new Map()
@@ -44,6 +48,14 @@ function sendHtml(res, status, html) {
     "access-control-allow-origin": "*",
   })
   res.end(html)
+}
+
+function redirect(res, location) {
+  res.writeHead(302, {
+    location,
+    "cache-control": "no-store",
+  })
+  res.end()
 }
 
 function sendError(res, status, code, message, extra = {}) {
@@ -678,6 +690,41 @@ async function handleApprove(req, res, url) {
   return sendHtml(res, 200, `<h1>Approved</h1><p>You can return to OpenCode.</p>`)
 }
 
+async function handleOAuthStart(req, res, url) {
+  try {
+    const authorizationUrl = await createOAuthAuthorization({
+      config: oauthConfig,
+      publicBaseUrl,
+      store,
+      userCode: url.searchParams.get("user_code"),
+    })
+    await store.save()
+    return redirect(res, authorizationUrl)
+  } catch (error) {
+    return sendError(res, error.statusCode || 500, readErrorCode(error, "oauth_start_failed"), error.message)
+  }
+}
+
+async function handleOAuthCallback(req, res, url) {
+  try {
+    const result = await completeOAuthCallback({
+      config: oauthConfig,
+      publicBaseUrl,
+      store,
+      query: url.searchParams,
+    })
+    await store.save()
+    return sendHtml(
+      res,
+      200,
+      `<h1>Approved</h1><p>${escapeHtml(result.account.user.email)} is now connected. You can return to OpenCode.</p>`,
+    )
+  } catch (error) {
+    await store.save()
+    return sendError(res, error.statusCode || 500, readErrorCode(error, "oauth_callback_failed"), error.message)
+  }
+}
+
 async function handleLogout(req, res, account) {
   let body = {}
   try {
@@ -713,13 +760,87 @@ async function handleTokenRevoke(req, res) {
   return sendJson(res, 200, { ok: true, revoked })
 }
 
+async function handleStripeWebhook(req, res) {
+  if (!stripeWebhookConfig.enabled) return sendError(res, 404, "not_found", "Stripe webhook is disabled.")
+  let rawBody
+  try {
+    rawBody = await readBody(req)
+    verifyStripeSignature({
+      rawBody,
+      signatureHeader: req.headers["stripe-signature"],
+      secret: stripeWebhookConfig.secret,
+      toleranceSeconds: stripeWebhookConfig.toleranceSeconds,
+    })
+  } catch (error) {
+    return sendError(res, error.statusCode || 400, readErrorCode(error, "invalid_stripe_webhook"), error.message)
+  }
+
+  let event
+  try {
+    event = JSON.parse(rawBody)
+  } catch {
+    return sendError(res, 400, "invalid_json", "Invalid Stripe webhook JSON body.")
+  }
+
+  if (!event?.id) return sendError(res, 400, "missing_event_id", "Stripe event id is required.")
+  const existing = store.getBillingEvent(`stripe:${event.id}`)
+  if (existing) return sendJson(res, 200, { received: true, replayed: true, status: existing.status })
+
+  let grantSpec
+  try {
+    grantSpec = stripeEventToCreditGrant(event, { maxCreditGrant: stripeWebhookConfig.maxCreditGrant })
+  } catch (error) {
+    store.putBillingEvent(`stripe:${event.id}`, { provider: "stripe", status: "rejected", payload: { type: event.type, error: error.message } })
+    await store.save()
+    return sendError(res, error.statusCode || 400, readErrorCode(error, "invalid_credit_metadata"), error.message)
+  }
+
+  if (grantSpec.ignored) {
+    store.putBillingEvent(`stripe:${event.id}`, { provider: "stripe", status: "ignored", payload: { type: event.type, reason: grantSpec.reason } })
+    await store.save()
+    return sendJson(res, 200, { received: true, ignored: true, reason: grantSpec.reason })
+  }
+
+  const account = grantSpec.token ? store.accountForToken(grantSpec.token) : store.accountForUserID(grantSpec.userID)
+  if (!account) {
+    store.putBillingEvent(`stripe:${event.id}`, { provider: "stripe", status: "account_not_found", payload: { type: event.type } })
+    await store.save()
+    return sendError(res, 404, "account_not_found", "Stripe credit target account was not found.")
+  }
+
+  const grant = store.grantCredits(account, grantSpec.credits, {
+    actor: "stripe",
+    reason: grantSpec.reason,
+    idempotencyKey: `stripe:${event.id}`,
+  })
+  store.putBillingEvent(`stripe:${event.id}`, {
+    provider: "stripe",
+    status: "credited",
+    ledgerId: grant.row.id,
+    payload: { type: event.type, credits: grantSpec.credits, userID: account.userID, orgID: account.orgID },
+  })
+  await store.save()
+  return sendJson(res, 200, {
+    received: true,
+    credited: true,
+    credits: grant.row.amount,
+    user_id: account.userID,
+    org_id: account.orgID,
+    ledger_id: grant.row.id,
+  })
+}
+
 function activationPage(url) {
   const userCode = url.searchParams.get("user_code") || ""
+  const oauthBlock = oauthConfig.enabled
+    ? `<p><a href="/auth/oauth/start?user_code=${encodeURIComponent(userCode)}">Continue with OAuth login</a></p>`
+    : ""
   return `<!doctype html>
 <html><head><meta charset="utf-8"><title>YourService device login</title></head>
 <body style="font-family: system-ui; max-width: 680px; margin: 48px auto; line-height: 1.5;">
 <h1>YourService device login</h1>
 <p>Approve OpenCode access for code <strong>${escapeHtml(userCode)}</strong>.</p>
+${oauthBlock}
 <form method="post" action="/activate?user_code=${encodeURIComponent(userCode)}">
   <input type="hidden" name="user_code" value="${escapeHtml(userCode)}" />
   <label>Account token <input name="token" value="" placeholder="dev-token" style="width: 280px" /></label>
@@ -759,6 +880,9 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/activate") return sendHtml(res, 200, activationPage(url))
     if (req.method === "POST" && url.pathname === "/activate") return handleApprove(req, res, url)
     if (req.method === "POST" && url.pathname === "/auth/device/approve") return handleApprove(req, res, url)
+    if (req.method === "GET" && url.pathname === "/auth/oauth/start") return handleOAuthStart(req, res, url)
+    if (req.method === "GET" && url.pathname === "/auth/oauth/callback") return handleOAuthCallback(req, res, url)
+    if (req.method === "POST" && url.pathname === "/webhooks/stripe") return handleStripeWebhook(req, res)
 
     if (url.pathname.startsWith("/admin/")) {
       if (!adminToken) return sendError(res, 404, "not_found", "Admin API is disabled.")

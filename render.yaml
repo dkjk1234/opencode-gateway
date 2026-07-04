@@ -13,6 +13,18 @@ services:
         sync: false
       - key: YOURSERVICE_ADMIN_TOKEN
         sync: false
+      - key: YOURSERVICE_OAUTH_ISSUER
+        sync: false
+      - key: YOURSERVICE_OAUTH_CLIENT_ID
+        sync: false
+      - key: YOURSERVICE_OAUTH_CLIENT_SECRET
+        sync: false
+      - key: YOURSERVICE_STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: YOURSERVICE_STATE_BACKEND
+        value: json
+      - key: DATABASE_URL
+        sync: false
       - key: YOURSERVICE_UPSTREAM_MODE
         value: openai
       - key: UPSTREAM_OPENAI_API_KEY

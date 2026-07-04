@@ -91,6 +91,34 @@ Common real-host environment variables:
 
 `render.yaml` is included as a first deploy blueprint. After connecting the GitHub repo to Render, set the `sync: false` secrets in the Render dashboard, then run the production smoke script against the issued URL.
 
+## Production auth, billing, and DB integration skeleton
+
+The gateway now has real integration seams for the three server-side systems the desktop app should never own directly:
+
+- OAuth/OIDC device approval: when `YOURSERVICE_OAUTH_CLIENT_ID` plus either `YOURSERVICE_OAUTH_ISSUER` or explicit endpoint URLs are configured, `/activate` shows a `Continue with OAuth login` link. The callback upserts the external identity, creates/updates the user/org, approves the OpenCode device code, and lets OpenCode poll `/auth/device/token` for a YourService token.
+- Stripe credit webhooks: `POST /webhooks/stripe` verifies the Stripe `v1` webhook signature with `YOURSERVICE_STRIPE_WEBHOOK_SECRET`, idempotently records the event, and credits the target account when supported events include metadata such as `yourservice_user_id` or `yourservice_token` plus `yourservice_credits`.
+- Database migration contract: `C:\Users\USER\Documents\GitHub\CodexShare\opencode-gateway\schema\postgres.sql` defines the target durable tables for users, orgs, identities, tokens, device codes, OAuth states, idempotency keys, billing events, and the credit ledger. Runtime still defaults to JSON state until the Postgres adapter is switched on.
+
+Example OAuth/OIDC env:
+
+```powershell
+$env:YOURSERVICE_PUBLIC_BASE_URL = "https://your-gateway.example.com"
+$env:YOURSERVICE_OAUTH_ISSUER = "https://accounts.example.com"
+$env:YOURSERVICE_OAUTH_CLIENT_ID = "..."
+$env:YOURSERVICE_OAUTH_CLIENT_SECRET = "..."
+$env:YOURSERVICE_OAUTH_REDIRECT_URI = "https://your-gateway.example.com/auth/oauth/callback"
+```
+
+Example Stripe Checkout metadata to grant credits:
+
+```json
+{
+  "yourservice_user_id": "usr_...",
+  "yourservice_credits": "5000",
+  "reason": "starter pack"
+}
+```
+
 ## Real upstream proxy mode
 
 Mock mode is the default and is what the smoke test uses. For a real MVP, keep OpenCode pointed at this gateway and let the gateway call the provider:

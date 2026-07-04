@@ -9,6 +9,9 @@ const DEFAULT_STATE = {
   refreshTokens: {},
   apiTokens: {},
   deviceCodes: {},
+  oauthStates: {},
+  externalIdentities: {},
+  billingEvents: {},
   ledger: [],
   requests: {},
   adminOperations: {},
@@ -157,6 +160,21 @@ export class GatewayState {
     return device
   }
 
+  approveDeviceCodeForAccount(userCode, userID, orgID) {
+    const device = this.findDeviceByUserCode(userCode)
+    if (!device) return undefined
+    if (device.expiresAt <= Date.now()) return undefined
+    if (device.status === "denied") return undefined
+    const account = this.account(userID, orgID)
+    if (!account) return undefined
+    if (device.status === "approved") return device
+    device.status = "approved"
+    device.userID = account.userID
+    device.orgID = account.orgID
+    device.approvedAt = Date.now()
+    return device
+  }
+
   denyDeviceCode(userCode) {
     const device = this.findDeviceByUserCode(userCode)
     if (!device) return undefined
@@ -208,6 +226,86 @@ export class GatewayState {
       access: this.revokeAccessToken(token),
       refresh: this.revokeRefreshToken(token),
     }
+  }
+
+  createOAuthState({ userCode, provider = "oidc", codeVerifier, redirectUri }) {
+    const state = `oauth_${randomUUID()}`
+    const now = Date.now()
+    this.state.oauthStates[state] = {
+      state,
+      userCode,
+      provider,
+      codeVerifier,
+      redirectUri,
+      createdAt: now,
+      expiresAt: now + 10 * 60 * 1000,
+    }
+    return this.state.oauthStates[state]
+  }
+
+  consumeOAuthState(state) {
+    const key = String(state || "")
+    const row = this.state.oauthStates[key]
+    if (!row) return undefined
+    delete this.state.oauthStates[key]
+    if (row.expiresAt <= Date.now()) return undefined
+    return row
+  }
+
+  upsertExternalUser({ provider = "oidc", subject, email, name, initialCredits = 0 }) {
+    const normalizedSubject = String(subject || "").trim()
+    if (!normalizedSubject) {
+      const error = new Error("External auth subject is required.")
+      error.statusCode = 400
+      throw error
+    }
+    const identityKey = `${provider}:${normalizedSubject}`
+    const now = new Date().toISOString()
+    const existing = this.state.externalIdentities[identityKey]
+    const idSuffix = createHash("sha256").update(identityKey).digest("hex").slice(0, 16)
+    const userID = existing?.userID || `usr_${idSuffix}`
+    const orgID = existing?.orgID || `org_${idSuffix}`
+
+    if (!this.state.users[userID]) {
+      this.state.users[userID] = {
+        id: userID,
+        email: String(email || `${userID}@yourservice.local`).slice(0, 320),
+        name: name ? String(name).slice(0, 160) : undefined,
+        defaultOrgID: orgID,
+        balance: normalizeSeedBalance(initialCredits, 0),
+        createdAt: now,
+      }
+    } else {
+      if (email) this.state.users[userID].email = String(email).slice(0, 320)
+      if (name) this.state.users[userID].name = String(name).slice(0, 160)
+      this.state.users[userID].updatedAt = now
+    }
+
+    if (!this.state.orgs[orgID]) {
+      this.state.orgs[orgID] = {
+        id: orgID,
+        name: "YourService User Org",
+        userIDs: [userID],
+      }
+    }
+
+    this.state.externalIdentities[identityKey] = {
+      provider,
+      subject: normalizedSubject,
+      userID,
+      orgID,
+      email: email || this.state.users[userID].email,
+      updatedAt: now,
+      createdAt: existing?.createdAt || now,
+    }
+
+    this.reconcileUserLedger(userID, orgID, {
+      tokenFingerprint: identityKey,
+      source: "external_auth",
+      reason: "external identity reconciliation",
+    })
+
+    return this.account(userID, orgID)
   }
 
   pollDeviceCode(deviceCode) {
@@ -319,6 +417,22 @@ export class GatewayState {
     }
 
     return { row, replayed: false }
+  }
+
+  getBillingEvent(eventID) {
+    if (!eventID) return undefined
+    return this.state.billingEvents[eventID]
+  }
+
+  putBillingEvent(eventID, value = {}) {
+    if (!eventID) return
+    const now = new Date().toISOString()
+    this.state.billingEvents[eventID] = {
+      id: eventID,
+      createdAt: this.state.billingEvents[eventID]?.createdAt || now,
+      updatedAt: now,
+      ...value,
+    }
   }
 
   ledgerFor(userID, limit = 100) {
