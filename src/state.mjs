@@ -119,11 +119,11 @@ export class GatewayState {
     return this.account(row.userID, row.orgID, token, row.tokenFingerprint || fingerprintToken(token))
   }
 
-  accountForUserID(userID) {
+  accountForUserID(userID, orgID) {
     if (!userID) return undefined
     const user = this.state.users[userID]
     if (!user) return undefined
-    return this.account(userID, user.defaultOrgID)
+    return this.account(userID, orgID || user.defaultOrgID)
   }
 
   createDeviceCode({ clientID }) {

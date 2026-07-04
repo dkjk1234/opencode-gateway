@@ -11,6 +11,7 @@ It is intentionally server-side: user auth, credit accounting, model routing, an
 - `POST /auth/logout` / `POST /auth/revoke`
 - `GET /activate` local development approval page
 - `GET /api/user` / `GET /api/orgs` / `GET /api/config` OpenCode console-compatible account/config endpoints
+- `GET /billing/status` / `GET /billing/plans` / `POST /billing/checkout`
 - `GET /v1/models`
 - `GET /v1/credits`
 - `GET /v1/usage`
@@ -88,6 +89,8 @@ Common real-host environment variables:
 | `DATABASE_URL` | PostgreSQL connection string when `YOURSERVICE_STATE_BACKEND=postgres`. |
 | `YOURSERVICE_DEV_TOKENS` | Temporary token/credit seed list for MVP testing. Replace with real auth-issued accounts later. |
 | `YOURSERVICE_ADMIN_TOKEN` | Server-side admin token for manual credit grants. Keep secret. |
+| `YOURSERVICE_BILLING_PLANS_JSON` | Authenticated checkout plans. Each plan includes `id`, `name`, `credits`, `amount`, `currency`, and optionally `stripe_price_id`. |
+| `YOURSERVICE_STRIPE_SECRET_KEY` / `YOURSERVICE_STRIPE_WEBHOOK_SECRET` | Server-side Stripe checkout and webhook secrets. Keep both secret. |
 | `YOURSERVICE_UPSTREAM_MODE` | `mock` for local validation, `openai` for `/chat/completions`, or `codex-responses` for a streaming `/responses` upstream. |
 | `UPSTREAM_OPENAI_API_KEY` | Provider key stored only on the server. |
 | `UPSTREAM_OPENAI_FAST_MODEL` / `UPSTREAM_OPENAI_PRO_MODEL` | Provider model IDs mapped behind YourService `fast` / `pro`. |
@@ -101,7 +104,7 @@ Common real-host environment variables:
 The gateway now has real integration seams for the three server-side systems the desktop app should never own directly:
 
 - OAuth/OIDC device approval: when `YOURSERVICE_OAUTH_CLIENT_ID` plus either `YOURSERVICE_OAUTH_ISSUER` or explicit endpoint URLs are configured, `/activate` shows a `Continue with OAuth login` link. The callback upserts the external identity, creates/updates the user/org, approves the OpenCode device code, and lets OpenCode poll `/auth/device/token` for a YourService token.
-- Stripe credit webhooks: `POST /webhooks/stripe` verifies the Stripe `v1` webhook signature with `YOURSERVICE_STRIPE_WEBHOOK_SECRET`, idempotently records the event, and credits the target account when supported events include metadata such as `yourservice_user_id` or `yourservice_token` plus `yourservice_credits`.
+- Stripe checkout and credit webhooks: `POST /billing/checkout` creates an authenticated Stripe Checkout Session from `YOURSERVICE_BILLING_PLANS_JSON` using the server-side `YOURSERVICE_STRIPE_SECRET_KEY`. `POST /webhooks/stripe` verifies the Stripe `v1` webhook signature with `YOURSERVICE_STRIPE_WEBHOOK_SECRET`, idempotently records the event, and credits the target account when supported events include metadata such as `yourservice_user_id`/`yourservice_org_id` or `yourservice_token` plus `yourservice_credits`.
 - PostgreSQL state backend: set `YOURSERVICE_STATE_BACKEND=postgres` plus `DATABASE_URL` to persist the gateway state in the `gateway_state` JSONB snapshot table. `C:\Users\USER\Documents\GitHub\CodexShare\opencode-gateway\schema\postgres.sql` also defines the target normalized durable tables for users, orgs, identities, tokens, device codes, OAuth states, idempotency keys, billing events, and the credit ledger.
 
 Example Postgres env:
@@ -123,11 +126,38 @@ $env:YOURSERVICE_OAUTH_CLIENT_SECRET = "..."
 $env:YOURSERVICE_OAUTH_REDIRECT_URI = "https://your-gateway.example.com/auth/oauth/callback"
 ```
 
-Example Stripe Checkout metadata to grant credits:
+Example Stripe checkout env:
+
+```powershell
+$env:YOURSERVICE_BILLING_PROVIDER = "stripe"
+$env:YOURSERVICE_BILLING_PLANS_JSON = '[{"id":"starter","name":"Starter credits","credits":100000,"amount":990,"currency":"usd"}]'
+$env:YOURSERVICE_STRIPE_SECRET_KEY = "sk_live_..."
+$env:YOURSERVICE_STRIPE_WEBHOOK_SECRET = "whsec_..."
+```
+
+Create a Checkout Session for the authenticated account:
+
+```powershell
+$checkout = @{
+  plan_id = "starter"
+} | ConvertTo-Json
+
+Invoke-RestMethod https://your-gateway.example.com/billing/checkout `
+  -Method POST `
+  -Headers @{
+    Authorization = "Bearer YOURSERVICE_ACCOUNT_TOKEN"
+    "Content-Type" = "application/json"
+    "Idempotency-Key" = "checkout-starter-001"
+  } `
+  -Body $checkout
+```
+
+The gateway writes these Stripe metadata fields into the Checkout Session and PaymentIntent so the webhook can grant credits without exposing provider secrets to the desktop client:
 
 ```json
 {
   "yourservice_user_id": "usr_...",
+  "yourservice_org_id": "org_...",
   "yourservice_credits": "5000",
   "reason": "starter pack"
 }

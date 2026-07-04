@@ -3,6 +3,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto"
 import { calculateCredits, estimateTokens, getModel, hasModel, listModels, providerModelConfig } from "./models.mjs"
+import { billingConfigFromEnv, billingStatus, createStripeCheckoutSession, publicBillingPlans, resolveBillingPlan } from "./billing.mjs"
 import { completeOAuthCallback, createOAuthAuthorization, oauthConfigFromEnv } from "./oauth.mjs"
 import { openGatewayState } from "./state.mjs"
 import { stripeEventToCreditGrant, stripeWebhookConfigFromEnv, verifyStripeSignature } from "./stripe.mjs"
@@ -30,6 +31,7 @@ const rateLimitDisabled = process.env.YOURSERVICE_RATE_LIMIT_DISABLED === "true"
 const rateLimitPerMinute = positiveIntegerFromEnv(process.env.YOURSERVICE_RATE_LIMIT_PER_MINUTE, 120)
 const oauthConfig = oauthConfigFromEnv(process.env)
 const stripeWebhookConfig = stripeWebhookConfigFromEnv(process.env)
+const billingConfig = billingConfigFromEnv(process.env)
 
 const store = await openGatewayState({
   backend: stateBackend,
@@ -786,6 +788,131 @@ async function handleTokenRevoke(req, res) {
   return sendJson(res, 200, { ok: true, revoked })
 }
 
+function handleBillingStatus(req, res, account) {
+  return sendJson(res, 200, {
+    object: "billing_status",
+    user_id: account.userID,
+    org_id: account.orgID,
+    ...billingStatus(billingConfig),
+    webhook_configured: stripeWebhookConfig.enabled,
+  })
+}
+
+function handleBillingPlans(req, res, account) {
+  return sendJson(res, 200, {
+    object: "list",
+    user_id: account.userID,
+    org_id: account.orgID,
+    data: publicBillingPlans(billingConfig),
+  })
+}
+
+async function handleBillingCheckout(req, res, account) {
+  let body
+  try {
+    body = await readJson(req)
+  } catch (error) {
+    return sendError(res, error.statusCode || 400, readErrorCode(error, "invalid_json"), error.message)
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return sendError(res, 400, "invalid_json", "Billing checkout body must be a JSON object.")
+  }
+
+  const idempotencyKey = String(req.headers["idempotency-key"] || body.idempotency_key || "").trim()
+  if (!idempotencyKey) {
+    return sendError(res, 400, "idempotency_key_required", "Billing checkout requires an Idempotency-Key header.")
+  }
+
+  const operationKey = `billing_checkout:${account.userID}:${account.orgID}:${idempotencyKey}`
+  const existing = store.getBillingEvent(operationKey)
+  if (existing?.status === "checkout_created" && existing.payload?.checkout_url) {
+    return sendJson(
+      res,
+      200,
+      {
+        object: "billing_checkout",
+        replayed: true,
+        provider: existing.provider,
+        checkout_id: existing.externalID,
+        checkout_url: existing.payload.checkout_url,
+        plan_id: existing.payload.plan_id,
+        credits: existing.payload.credits,
+      },
+      { "x-yourservice-idempotent-replay": "true" },
+    )
+  }
+
+  let plan
+  try {
+    plan = resolveBillingPlan(billingConfig, body.plan_id || body.plan)
+  } catch (error) {
+    return sendError(res, error.statusCode || 400, readErrorCode(error, "billing_plan_invalid"), error.message)
+  }
+
+  let checkout
+  try {
+    checkout = await createStripeCheckoutSession({
+      config: billingConfig,
+      plan,
+      account,
+      publicBaseUrl,
+      idempotencyKey: operationKey,
+      successUrl: body.success_url,
+      cancelUrl: body.cancel_url,
+      customerEmail: body.customer_email || account.user.email,
+    })
+  } catch (error) {
+    store.putBillingEvent(operationKey, {
+      provider: billingConfig.provider,
+      status: "checkout_failed",
+      payload: { plan_id: plan.id, credits: plan.credits, error: error.message },
+    })
+    await store.save()
+    return sendError(res, error.statusCode || 503, readErrorCode(error, "billing_checkout_failed"), error.message)
+  }
+
+  store.putBillingEvent(operationKey, {
+    provider: "stripe",
+    status: "checkout_created",
+    externalID: checkout.id,
+    payload: {
+      checkout_url: checkout.url,
+      plan_id: plan.id,
+      credits: plan.credits,
+      user_id: account.userID,
+      org_id: account.orgID,
+    },
+  })
+  store.putBillingEvent(`stripe_checkout:${checkout.id}`, {
+    provider: "stripe",
+    status: "checkout_created",
+    externalID: checkout.id,
+    payload: {
+      plan_id: plan.id,
+      credits: plan.credits,
+      user_id: account.userID,
+      org_id: account.orgID,
+    },
+  })
+  await store.save()
+  return sendJson(
+    res,
+    201,
+    {
+      object: "billing_checkout",
+      replayed: false,
+      provider: "stripe",
+      checkout_id: checkout.id,
+      checkout_url: checkout.url,
+      plan_id: plan.id,
+      credits: plan.credits,
+    },
+    {
+      "x-yourservice-idempotent-replay": "false",
+    },
+  )
+}
+
 async function handleStripeWebhook(req, res) {
   if (!stripeWebhookConfig.enabled) return sendError(res, 404, "not_found", "Stripe webhook is disabled.")
   let rawBody
@@ -827,7 +954,7 @@ async function handleStripeWebhook(req, res) {
     return sendJson(res, 200, { received: true, ignored: true, reason: grantSpec.reason })
   }
 
-  const account = grantSpec.token ? store.accountForToken(grantSpec.token) : store.accountForUserID(grantSpec.userID)
+  const account = grantSpec.token ? store.accountForToken(grantSpec.token) : store.accountForUserID(grantSpec.userID, grantSpec.orgID)
   if (!account) {
     store.putBillingEvent(`stripe:${event.id}`, { provider: "stripe", status: "account_not_found", payload: { type: event.type } })
     await store.save()
@@ -876,6 +1003,22 @@ ${oauthBlock}
 </body></html>`
 }
 
+function billingReturnPage(url) {
+  const success = url.pathname.endsWith("/success")
+  const sessionID = url.searchParams.get("session_id") || ""
+  const title = success ? "Payment received" : "Payment canceled"
+  const message = success
+    ? "If the Stripe webhook is configured, credits will be applied to your account automatically. You can return to OpenCode."
+    : "No payment was completed. You can return to OpenCode and try again."
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><title>YourService ${escapeHtml(title)}</title></head>
+<body style="font-family: system-ui; max-width: 680px; margin: 48px auto; line-height: 1.5;">
+<h1>${escapeHtml(title)}</h1>
+<p>${escapeHtml(message)}</p>
+${sessionID ? `<p style="color:#666">Checkout session: <code>${escapeHtml(sessionID)}</code></p>` : ""}
+</body></html>`
+}
+
 function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char])
 }
@@ -896,6 +1039,12 @@ export const gatewayHandler = async (req, res) => {
         time: new Date().toISOString(),
         state_backend: store.backend,
         state: store.description || statePath,
+        billing: {
+          provider: billingConfig.provider,
+          checkout_configured: Boolean(billingConfig.stripe?.enabled),
+          plans_count: billingConfig.plans.length,
+          stripe_webhook_configured: stripeWebhookConfig.enabled,
+        },
       })
     }
 
@@ -913,6 +1062,17 @@ export const gatewayHandler = async (req, res) => {
     if (req.method === "GET" && url.pathname === "/auth/oauth/start") return handleOAuthStart(req, res, url)
     if (req.method === "GET" && url.pathname === "/auth/oauth/callback") return handleOAuthCallback(req, res, url)
     if (req.method === "POST" && url.pathname === "/webhooks/stripe") return handleStripeWebhook(req, res)
+    if (req.method === "GET" && (url.pathname === "/billing/success" || url.pathname === "/billing/cancel")) {
+      return sendHtml(res, 200, billingReturnPage(url))
+    }
+
+    if (url.pathname.startsWith("/billing/")) {
+      const account = authenticate(req)
+      if (!account) return sendError(res, 401, "unauthorized", "Missing or invalid bearer token.")
+      if (req.method === "GET" && url.pathname === "/billing/status") return handleBillingStatus(req, res, account)
+      if (req.method === "GET" && url.pathname === "/billing/plans") return handleBillingPlans(req, res, account)
+      if (req.method === "POST" && url.pathname === "/billing/checkout") return handleBillingCheckout(req, res, account)
+    }
 
     if (url.pathname.startsWith("/admin/")) {
       if (!adminToken) return sendError(res, 404, "not_found", "Admin API is disabled.")

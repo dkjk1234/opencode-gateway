@@ -45,6 +45,7 @@ export function stripeEventToCreditGrant(event, { maxCreditGrant = 1_000_000 } =
   }
   const token = String(metadata.yourservice_token || metadata.token || "").trim()
   const userID = String(metadata.yourservice_user_id || metadata.user_id || "").trim()
+  const orgID = String(metadata.yourservice_org_id || metadata.org_id || "").trim()
   if (!token && !userID) {
     throw httpError(400, "missing_account_metadata", "Stripe event metadata must include yourservice_token or yourservice_user_id.")
   }
@@ -52,6 +53,7 @@ export function stripeEventToCreditGrant(event, { maxCreditGrant = 1_000_000 } =
     ignored: false,
     token,
     userID,
+    orgID,
     credits,
     reason: String(metadata.reason || `stripe ${eventType}`).slice(0, 280),
   }
