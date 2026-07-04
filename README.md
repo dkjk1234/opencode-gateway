@@ -1,6 +1,6 @@
 # YourService OpenCode Gateway MVP
 
-A tiny dependency-free OpenAI-compatible gateway scaffold for the branded OpenCode Desktop plan.
+A small Node.js OpenAI-compatible gateway scaffold for the branded OpenCode Desktop plan.
 
 It is intentionally server-side: user auth, credit accounting, model routing, and upstream provider keys live here, not in the desktop app.
 
@@ -82,7 +82,9 @@ Common real-host environment variables:
 | `PORT` | Platform-injected port. If set, it overrides `YOURSERVICE_GATEWAY_PORT`. |
 | `YOURSERVICE_GATEWAY_HOST` | Use `0.0.0.0` in containers/cloud hosts. |
 | `YOURSERVICE_PUBLIC_BASE_URL` | Public HTTPS URL used in device auth verification links. |
-| `YOURSERVICE_DATA_PATH` | JSON ledger path. Use a mounted volume until the DB adapter replaces it. |
+| `YOURSERVICE_DATA_PATH` | JSON ledger path when `YOURSERVICE_STATE_BACKEND=json`. |
+| `YOURSERVICE_STATE_BACKEND` | `json` for local development, `postgres` for deployed persistence. |
+| `DATABASE_URL` | PostgreSQL connection string when `YOURSERVICE_STATE_BACKEND=postgres`. |
 | `YOURSERVICE_DEV_TOKENS` | Temporary token/credit seed list for MVP testing. Replace with real auth-issued accounts later. |
 | `YOURSERVICE_ADMIN_TOKEN` | Server-side admin token for manual credit grants. Keep secret. |
 | `YOURSERVICE_UPSTREAM_MODE` | `mock` for local validation or `openai` for OpenAI-compatible provider proxying. |
@@ -91,13 +93,22 @@ Common real-host environment variables:
 
 `render.yaml` is included as a first deploy blueprint. After connecting the GitHub repo to Render, set the `sync: false` secrets in the Render dashboard, then run the production smoke script against the issued URL.
 
-## Production auth, billing, and DB integration skeleton
+## Production auth, billing, and DB integration
 
 The gateway now has real integration seams for the three server-side systems the desktop app should never own directly:
 
 - OAuth/OIDC device approval: when `YOURSERVICE_OAUTH_CLIENT_ID` plus either `YOURSERVICE_OAUTH_ISSUER` or explicit endpoint URLs are configured, `/activate` shows a `Continue with OAuth login` link. The callback upserts the external identity, creates/updates the user/org, approves the OpenCode device code, and lets OpenCode poll `/auth/device/token` for a YourService token.
 - Stripe credit webhooks: `POST /webhooks/stripe` verifies the Stripe `v1` webhook signature with `YOURSERVICE_STRIPE_WEBHOOK_SECRET`, idempotently records the event, and credits the target account when supported events include metadata such as `yourservice_user_id` or `yourservice_token` plus `yourservice_credits`.
-- Database migration contract: `C:\Users\USER\Documents\GitHub\CodexShare\opencode-gateway\schema\postgres.sql` defines the target durable tables for users, orgs, identities, tokens, device codes, OAuth states, idempotency keys, billing events, and the credit ledger. Runtime still defaults to JSON state until the Postgres adapter is switched on.
+- PostgreSQL state backend: set `YOURSERVICE_STATE_BACKEND=postgres` plus `DATABASE_URL` to persist the gateway state in the `gateway_state` JSONB snapshot table. `C:\Users\USER\Documents\GitHub\CodexShare\opencode-gateway\schema\postgres.sql` also defines the target normalized durable tables for users, orgs, identities, tokens, device codes, OAuth states, idempotency keys, billing events, and the credit ledger.
+
+Example Postgres env:
+
+```powershell
+$env:YOURSERVICE_STATE_BACKEND = "postgres"
+$env:DATABASE_URL = "postgres://yourservice_gateway:...@host:5432/yourservice_opencode_gateway"
+$env:YOURSERVICE_POSTGRES_AUTO_MIGRATE = "true"
+node src/server.mjs
+```
 
 Example OAuth/OIDC env:
 
@@ -136,7 +147,7 @@ The upstream call is intentionally centralized in `C:\Users\USER\Documents\GitHu
 
 ## MVP hardening now included
 
-The dependency-free gateway is still not a final billing system, but it now includes several production-MVP guardrails:
+The gateway is still not a final billing system, but it now includes several production-MVP guardrails:
 
 - bounded request body reads via `YOURSERVICE_MAX_BODY_BYTES`,
 - chat request validation before provider spend or credit debit,
@@ -152,7 +163,7 @@ The dependency-free gateway is still not a final billing system, but it now incl
 
 ## Credit ledger safety
 
-The gateway persists account state to `YOURSERVICE_DATA_PATH` (default `.data/gateway-state.json`). Saves are queued and written through a same-directory temp file before an atomic rename, which avoids partially written JSON if the process exits during a write. Startup token seeding also creates or reconciles a ledger credit row so `/v1/usage` can explain the current balance instead of only showing later debits.
+By default the gateway persists account state to `YOURSERVICE_DATA_PATH` (default `.data/gateway-state.json`). Saves are queued and written through a same-directory temp file before an atomic rename, which avoids partially written JSON if the process exits during a write. For deployed services, set `YOURSERVICE_STATE_BACKEND=postgres` and `DATABASE_URL`; the server auto-creates the `gateway_state` table unless `YOURSERVICE_POSTGRES_AUTO_MIGRATE=false`. Startup token seeding also creates or reconciles a ledger credit row so `/v1/usage` can explain the current balance instead of only showing later debits.
 
 For local operations without an external billing service, an admin can grant credits to an existing dev/API token. The endpoint is disabled unless `YOURSERVICE_ADMIN_TOKEN` is configured, requires a separate admin bearer token, caps each grant with `YOURSERVICE_MAX_CREDIT_GRANT`, and requires an `Idempotency-Key` header so retries do not double-credit an account.
 
@@ -214,9 +225,18 @@ npm run test:upstream
 
 The PowerShell smoke test covers health, models, bad device approval rejection, device-code approval, `/api/user`, `/api/orgs`, `/api/config`, admin credit grant idempotency, chat validation failures, request body size limits, chat completions, idempotency replay/conflict behavior, refresh token rotation, logout revocation, and credit debit/ledger rows. `npm run test:upstream` starts a fake local OpenAI-compatible server and verifies that `src/upstream.mjs` forwards requests without requiring a real provider key.
 
+To verify the actual OpenCode account path against this gateway, run the E2E harness with a local OpenCode checkout:
+
+```powershell
+.\scripts\opencode-account-e2e.ps1 `
+  -OpenCodeRepo "C:\Users\USER\AppData\Local\Temp\opencode-service-design"
+```
+
+That harness starts a temporary gateway, runs `opencode console login` through the device-code flow with auto-approval enabled for the throwaway process, verifies `console orgs`, verifies that `debug config` merged the remote YourService provider config, and finally runs `opencode run --model yourservice/fast` against the mock gateway. It uses isolated `XDG_*`, `OPENCODE_TEST_HOME`, and `OPENCODE_DB` paths under `%TEMP%` so it does not touch the user's real OpenCode credentials.
+
 ## Next production steps
 
-1. Replace the JSON development state file with a database-backed ledger before multi-process deployment.
+1. Replace the Postgres JSONB snapshot backend with row-level writes to the normalized tables in `schema/postgres.sql` before high-concurrency multi-instance deployment.
 2. Add explicit reserve/commit/release rows for true provider streaming and mid-stream failure refunds.
 3. Upgrade `src/upstream.mjs` from non-streaming OpenAI-compatible forwarding to true streaming passthrough and provider-specific adapters where needed.
 4. Replace the local approval page with real user login.

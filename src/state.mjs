@@ -2,7 +2,7 @@
 import path from "node:path"
 import { createHash, randomUUID } from "node:crypto"
 
-const DEFAULT_STATE = {
+export const DEFAULT_STATE = {
   users: {},
   orgs: {},
   accessTokens: {},
@@ -20,6 +20,8 @@ const DEFAULT_STATE = {
 export class GatewayState {
   constructor(filePath) {
     this.filePath = filePath
+    this.backend = "json"
+    this.description = filePath
     this.state = structuredClone(DEFAULT_STATE)
     this.saveChain = Promise.resolve()
   }
@@ -462,6 +464,109 @@ export class GatewayState {
     this.state.ledger.push(row)
     return row
   }
+}
+
+export class PostgresGatewayState extends GatewayState {
+  constructor(pool, snapshotID = "default") {
+    super(`postgres:gateway_state/${snapshotID}`)
+    this.pool = pool
+    this.snapshotID = snapshotID
+    this.backend = "postgres"
+    this.description = `postgres:gateway_state/${snapshotID}`
+  }
+
+  static async open({ databaseUrl, seedSpec, snapshotID = "default", autoMigrate = true, ssl }) {
+    if (!databaseUrl) {
+      const error = new Error("DATABASE_URL is required when YOURSERVICE_STATE_BACKEND=postgres.")
+      error.code = "missing_database_url"
+      throw error
+    }
+    const { default: pg } = await import("pg")
+    const { Pool } = pg
+    const pool = new Pool({
+      connectionString: databaseUrl,
+      ssl,
+      max: positiveIntegerFromEnv(process.env.YOURSERVICE_POSTGRES_POOL_MAX, 5),
+    })
+    const store = new PostgresGatewayState(pool, snapshotID)
+    if (autoMigrate) await store.migrate()
+    await store.load()
+    store.seed(seedSpec)
+    await store.save()
+    return store
+  }
+
+  async migrate() {
+    await this.pool.query(`
+      create table if not exists gateway_state (
+        id text primary key,
+        state jsonb not null,
+        created_at timestamptz not null default now(),
+        updated_at timestamptz not null default now()
+      )
+    `)
+  }
+
+  async load() {
+    const result = await this.pool.query("select state from gateway_state where id = $1", [this.snapshotID])
+    const row = result.rows[0]
+    if (!row) {
+      this.state = structuredClone(DEFAULT_STATE)
+      return
+    }
+    const loaded = typeof row.state === "string" ? JSON.parse(row.state) : row.state
+    this.state = { ...structuredClone(DEFAULT_STATE), ...loaded }
+  }
+
+  async save() {
+    const snapshot = JSON.stringify(this.state)
+    const write = this.saveChain.catch(() => undefined).then(() => this.writeSnapshot(snapshot))
+    this.saveChain = write
+    return write
+  }
+
+  async writeSnapshot(snapshot) {
+    await this.pool.query(
+      `
+        insert into gateway_state (id, state, updated_at)
+        values ($1, $2::jsonb, now())
+        on conflict (id) do update
+          set state = excluded.state,
+              updated_at = now()
+      `,
+      [this.snapshotID, snapshot],
+    )
+  }
+
+  async close() {
+    await this.pool.end()
+  }
+}
+
+export async function openGatewayState({ backend = "json", filePath, seedSpec, databaseUrl, env = process.env }) {
+  const normalized = String(backend || "json").toLowerCase()
+  if (normalized === "json") return GatewayState.open(filePath, seedSpec)
+  if (normalized === "postgres" || normalized === "postgresql" || normalized === "pg") {
+    return PostgresGatewayState.open({
+      databaseUrl,
+      seedSpec,
+      snapshotID: env.YOURSERVICE_POSTGRES_SNAPSHOT_ID || "default",
+      autoMigrate: env.YOURSERVICE_POSTGRES_AUTO_MIGRATE !== "false",
+      ssl: postgresSslFromEnv(env),
+    })
+  }
+  const error = new Error(`Unsupported YOURSERVICE_STATE_BACKEND '${backend}'. Use 'json' or 'postgres'.`)
+  error.code = "unsupported_state_backend"
+  throw error
+}
+
+function postgresSslFromEnv(env) {
+  const mode = String(env.YOURSERVICE_POSTGRES_SSL || "").toLowerCase()
+  if (!mode) return undefined
+  if (["false", "0", "disable", "disabled"].includes(mode)) return false
+  if (["true", "1", "require", "required"].includes(mode)) return { rejectUnauthorized: false }
+  if (["verify-full", "verify_ca", "verify-ca"].includes(mode)) return { rejectUnauthorized: true }
+  return undefined
 }
 
 function randomUserCode() {

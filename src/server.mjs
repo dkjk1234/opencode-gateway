@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url"
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto"
 import { calculateCredits, estimateTokens, getModel, hasModel, listModels, providerModelConfig } from "./models.mjs"
 import { completeOAuthCallback, createOAuthAuthorization, oauthConfigFromEnv } from "./oauth.mjs"
-import { GatewayState } from "./state.mjs"
+import { openGatewayState } from "./state.mjs"
 import { stripeEventToCreditGrant, stripeWebhookConfigFromEnv, verifyStripeSignature } from "./stripe.mjs"
 import { boundedOutputTokens, callOpenAICompatibleChat, resolveChatUpstream } from "./upstream.mjs"
 
@@ -13,6 +13,7 @@ const host = process.env.YOURSERVICE_GATEWAY_HOST || "127.0.0.1"
 const port = Number(process.env.PORT || process.env.YOURSERVICE_GATEWAY_PORT || 8788)
 const publicBaseUrl = (process.env.YOURSERVICE_PUBLIC_BASE_URL || `http://${host}:${port}`).replace(/\/$/, "")
 const statePath = process.env.YOURSERVICE_DATA_PATH || path.resolve(__dirname, "..", ".data", "gateway-state.json")
+const stateBackend = process.env.YOURSERVICE_STATE_BACKEND || "json"
 const seedTokens = process.env.YOURSERVICE_DEV_TOKENS || "dev-token:100000"
 const allowAnonDev = process.env.YOURSERVICE_ALLOW_ANON_DEV === "true"
 const allowDevApproval = process.env.YOURSERVICE_ALLOW_DEV_APPROVAL === "true"
@@ -24,7 +25,13 @@ const rateLimitPerMinute = positiveIntegerFromEnv(process.env.YOURSERVICE_RATE_L
 const oauthConfig = oauthConfigFromEnv(process.env)
 const stripeWebhookConfig = stripeWebhookConfigFromEnv(process.env)
 
-const store = await GatewayState.open(statePath, seedTokens)
+const store = await openGatewayState({
+  backend: stateBackend,
+  filePath: statePath,
+  seedSpec: seedTokens,
+  databaseUrl: process.env.DATABASE_URL,
+  env: process.env,
+})
 const rateLimitBuckets = new Map()
 const accountLocks = new Map()
 
@@ -865,7 +872,8 @@ const server = http.createServer(async (req, res) => {
         ok: true,
         service: "yourservice-opencode-gateway",
         time: new Date().toISOString(),
-        state: statePath,
+        state_backend: store.backend,
+        state: store.description || statePath,
       })
     }
 
@@ -945,6 +953,6 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(port, host, () => {
   console.log(`YourService OpenCode gateway listening on http://${host}:${port}`)
-  console.log(`State file: ${statePath}`)
+  console.log(`State backend: ${store.backend} (${store.description || statePath})`)
 })
 

@@ -22,9 +22,13 @@ services:
       - key: YOURSERVICE_STRIPE_WEBHOOK_SECRET
         sync: false
       - key: YOURSERVICE_STATE_BACKEND
-        value: json
+        value: postgres
       - key: DATABASE_URL
-        sync: false
+        fromDatabase:
+          name: yourservice-opencode-gateway-db
+          property: connectionString
+      - key: YOURSERVICE_POSTGRES_AUTO_MIGRATE
+        value: true
       - key: YOURSERVICE_UPSTREAM_MODE
         value: openai
       - key: UPSTREAM_OPENAI_API_KEY
@@ -35,3 +39,8 @@ services:
         sync: false
       - key: UPSTREAM_OPENAI_PRO_MODEL
         sync: false
+
+databases:
+  - name: yourservice-opencode-gateway-db
+    databaseName: yourservice_opencode_gateway
+    user: yourservice_gateway

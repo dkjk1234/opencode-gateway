@@ -1,7 +1,15 @@
--- Production database target for replacing the JSON state file.
--- The current MVP still runs with YOURSERVICE_STATE_BACKEND=json, but these
--- tables define the durable contract for the OAuth, billing, token, device,
--- idempotency, and credit-ledger paths.
+-- Production database target for replacing the local JSON state file.
+-- The gateway can run with YOURSERVICE_STATE_BACKEND=postgres today via the
+-- gateway_state snapshot table below. The normalized tables define the durable
+-- contract for the OAuth, billing, token, device, idempotency, and credit-ledger
+-- paths as the service graduates from snapshot persistence to row-level writes.
+
+create table if not exists gateway_state (
+  id text primary key,
+  state jsonb not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
 
 create table if not exists users (
   id text primary key,

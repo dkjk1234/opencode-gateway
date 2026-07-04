@@ -7,7 +7,9 @@ ENV NODE_ENV=production \
     YOURSERVICE_GATEWAY_PORT=8788 \
     YOURSERVICE_DATA_PATH=/data/gateway-state.json
 
-COPY package.json ./
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+
 COPY src ./src
 
 RUN mkdir -p /data && chown -R node:node /app /data
