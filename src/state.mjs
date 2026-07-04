@@ -595,6 +595,12 @@ function normalizeSeedBalance(value, fallback) {
   return fallback
 }
 
+function positiveIntegerFromEnv(value, fallback) {
+  const amount = Number(value)
+  if (Number.isSafeInteger(amount) && amount > 0) return amount
+  return fallback
+}
+
 function fingerprintToken(token) {
   return createHash("sha256").update(String(token)).digest("hex").slice(0, 16)
 }
