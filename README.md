@@ -1,4 +1,4 @@
-﻿# YourService OpenCode Gateway MVP
+# YourService OpenCode Gateway MVP
 
 A tiny dependency-free OpenAI-compatible gateway scaffold for the branded OpenCode Desktop plan.
 
@@ -52,6 +52,44 @@ Invoke-RestMethod http://127.0.0.1:8788/v1/chat/completions `
   -Headers @{ Authorization = "Bearer dev-token"; "Content-Type" = "application/json" } `
   -Body $body
 ```
+
+## Deployable server build
+
+The gateway now includes a container entrypoint and production smoke script so the same server can run on a real host while keeping upstream provider keys off the desktop client.
+
+Build and run locally with Docker:
+
+```powershell
+cd C:\Users\USER\Documents\GitHub\CodexShare\opencode-gateway
+docker build -t yourservice-opencode-gateway .
+docker run --rm -p 8788:8788 `
+  -e YOURSERVICE_DEV_TOKENS="dev-token:100000" `
+  -e YOURSERVICE_ADMIN_TOKEN="replace-with-local-admin-secret" `
+  -e YOURSERVICE_UPSTREAM_MODE="mock" `
+  yourservice-opencode-gateway
+```
+
+Production-ish smoke test against any deployed URL:
+
+```powershell
+.\scripts\prod-smoke.ps1 -BaseUrl "https://your-gateway.example.com" -Token "dev-token"
+```
+
+Common real-host environment variables:
+
+| Variable | Purpose |
+| --- | --- |
+| `PORT` | Platform-injected port. If set, it overrides `YOURSERVICE_GATEWAY_PORT`. |
+| `YOURSERVICE_GATEWAY_HOST` | Use `0.0.0.0` in containers/cloud hosts. |
+| `YOURSERVICE_PUBLIC_BASE_URL` | Public HTTPS URL used in device auth verification links. |
+| `YOURSERVICE_DATA_PATH` | JSON ledger path. Use a mounted volume until the DB adapter replaces it. |
+| `YOURSERVICE_DEV_TOKENS` | Temporary token/credit seed list for MVP testing. Replace with real auth-issued accounts later. |
+| `YOURSERVICE_ADMIN_TOKEN` | Server-side admin token for manual credit grants. Keep secret. |
+| `YOURSERVICE_UPSTREAM_MODE` | `mock` for local validation or `openai` for OpenAI-compatible provider proxying. |
+| `UPSTREAM_OPENAI_API_KEY` | Provider key stored only on the server. |
+| `UPSTREAM_OPENAI_FAST_MODEL` / `UPSTREAM_OPENAI_PRO_MODEL` | Provider model IDs mapped behind YourService `fast` / `pro`. |
+
+`render.yaml` is included as a first deploy blueprint. After connecting the GitHub repo to Render, set the `sync: false` secrets in the Render dashboard, then run the production smoke script against the issued URL.
 
 ## Real upstream proxy mode
 

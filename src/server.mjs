@@ -8,7 +8,7 @@ import { boundedOutputTokens, callOpenAICompatibleChat, resolveChatUpstream } fr
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const host = process.env.YOURSERVICE_GATEWAY_HOST || "127.0.0.1"
-const port = Number(process.env.YOURSERVICE_GATEWAY_PORT || 8788)
+const port = Number(process.env.PORT || process.env.YOURSERVICE_GATEWAY_PORT || 8788)
 const publicBaseUrl = (process.env.YOURSERVICE_PUBLIC_BASE_URL || `http://${host}:${port}`).replace(/\/$/, "")
 const statePath = process.env.YOURSERVICE_DATA_PATH || path.resolve(__dirname, "..", ".data", "gateway-state.json")
 const seedTokens = process.env.YOURSERVICE_DEV_TOKENS || "dev-token:100000"

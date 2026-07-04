@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: yourservice-opencode-gateway
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: YOURSERVICE_GATEWAY_HOST
+        value: 0.0.0.0
+      - key: YOURSERVICE_PUBLIC_BASE_URL
+        sync: false
+      - key: YOURSERVICE_DEV_TOKENS
+        sync: false
+      - key: YOURSERVICE_ADMIN_TOKEN
+        sync: false
+      - key: YOURSERVICE_UPSTREAM_MODE
+        value: openai
+      - key: UPSTREAM_OPENAI_API_KEY
+        sync: false
+      - key: UPSTREAM_OPENAI_BASE_URL
+        value: https://api.openai.com/v1
+      - key: UPSTREAM_OPENAI_FAST_MODEL
+        sync: false
+      - key: UPSTREAM_OPENAI_PRO_MODEL
+        sync: false
