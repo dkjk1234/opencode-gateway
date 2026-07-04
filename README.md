@@ -231,6 +231,39 @@ Invoke-RestMethod http://127.0.0.1:8788/admin/credits/grant `
   -Body $grant
 ```
 
+The same admin bearer token can read a non-secret deployment snapshot:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8788/admin/status `
+  -Headers @{ Authorization = "Bearer replace-with-local-admin-secret" }
+```
+
+`/admin/status` intentionally reports booleans, counts, effective OAuth redirect URI, state backend, billing readiness, and model metadata without returning tokens, API keys, client secrets, or raw customer credentials.
+
+### llms.ai.kr OAuth relay deployment note
+
+For the `llms.ai.kr` VPS deployment, the existing Google OAuth client already allows:
+
+```text
+https://llms.ai.kr/chatgpt/auth/google/callback
+```
+
+The OpenCode gateway can therefore set:
+
+```env
+YOURSERVICE_PUBLIC_BASE_URL=https://llms.ai.kr/opencode-gateway
+YOURSERVICE_BASE_PATH=/opencode-gateway
+YOURSERVICE_OAUTH_REDIRECT_URI=https://llms.ai.kr/chatgpt/auth/google/callback
+```
+
+and the `/chatgpt` proxy may relay callback requests whose `state` starts with `oauth_` to:
+
+```text
+https://llms.ai.kr/opencode-gateway/auth/oauth/callback
+```
+
+That keeps the authorization `redirect_uri` equal to the already-registered Google callback while still letting this gateway complete the device-code approval.
+
 ## OpenCode provider config
 
 For local testing, point OpenCode at this gateway:
@@ -263,11 +296,12 @@ Store `dev-token` as the provider credential while testing.
 ```powershell
 cd C:\Users\USER\Documents\GitHub\CodexShare\opencode-gateway
 npm run check
+npm run test:oauth
 npm run test:upstream
 ./scripts/smoke-test.ps1
 ```
 
-The PowerShell smoke test covers health, models, bad device approval rejection, device-code approval, `/api/user`, `/api/orgs`, `/api/config`, admin credit grant idempotency, chat validation failures, request body size limits, chat completions, idempotency replay/conflict behavior, refresh token rotation, logout revocation, and credit debit/ledger rows. `npm run test:upstream` starts a fake local OpenAI-compatible server and verifies that `src/upstream.mjs` forwards requests without requiring a real provider key.
+The PowerShell smoke test covers health, models, bad device approval rejection, device-code approval, `/api/user`, `/api/orgs`, `/api/config`, admin credit grant idempotency, chat validation failures, request body size limits, chat completions, idempotency replay/conflict behavior, refresh token rotation, logout revocation, and credit debit/ledger rows. `npm run test:oauth` verifies OAuth redirect override behavior and confirms token exchange reuses the stored redirect URI. `npm run test:upstream` starts a fake local OpenAI-compatible server and verifies that `src/upstream.mjs` forwards requests without requiring a real provider key.
 
 To verify the actual OpenCode account path against this gateway, run the E2E harness with a local OpenCode checkout:
 
@@ -283,5 +317,5 @@ That harness starts a temporary gateway, runs `opencode console login` through t
 1. Replace the Postgres JSONB snapshot backend with row-level writes to the normalized tables in `schema/postgres.sql` before high-concurrency multi-instance deployment.
 2. Add explicit reserve/commit/release rows for true provider streaming and mid-stream failure refunds.
 3. Upgrade `src/upstream.mjs` from gateway-buffered upstream calls to true streaming passthrough and add more provider-specific adapters where needed.
-4. Replace the local approval page with real user login.
-5. Add durable rate limits, structured audit logs, and billing/webhook integration.
+4. Replace the fallback token-entry approval form with a polished production login/plan-selection UI.
+5. Add structured audit logs and expand the billing admin UI around the existing Stripe checkout/webhook MVP.

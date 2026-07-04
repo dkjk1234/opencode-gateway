@@ -441,6 +441,29 @@ export class GatewayState {
     return this.state.ledger.filter((row) => row.userId === userID).slice(-limit)
   }
 
+  summary() {
+    const deviceStatuses = countBy(Object.values(this.state.deviceCodes), (item) => item.status || "unknown")
+    const billingStatuses = countBy(Object.values(this.state.billingEvents), (item) => item.status || "unknown")
+    const ledgerTotal = this.state.ledger.reduce((sum, row) => sum + Number(row.amount || 0), 0)
+    return {
+      users: Object.keys(this.state.users).length,
+      orgs: Object.keys(this.state.orgs).length,
+      access_tokens: Object.keys(this.state.accessTokens).length,
+      refresh_tokens: Object.keys(this.state.refreshTokens).length,
+      api_tokens: Object.keys(this.state.apiTokens).length,
+      device_codes: Object.keys(this.state.deviceCodes).length,
+      device_codes_by_status: deviceStatuses,
+      oauth_states: Object.keys(this.state.oauthStates).length,
+      external_identities: Object.keys(this.state.externalIdentities).length,
+      billing_events: Object.keys(this.state.billingEvents).length,
+      billing_events_by_status: billingStatuses,
+      ledger_rows: this.state.ledger.length,
+      ledger_total: ledgerTotal,
+      admin_operations: Object.keys(this.state.adminOperations).length,
+      requests: Object.keys(this.state.requests).length,
+    }
+  }
+
   reconcileUserLedger(userID, orgID, { tokenFingerprint, source, reason }) {
     const user = this.state.users[userID]
     if (!user) return undefined
@@ -578,6 +601,15 @@ function randomUserCode() {
 
 function normalizeUserCode(value) {
   return String(value || "").toUpperCase().replace(/[^A-Z0-9]/g, "")
+}
+
+function countBy(items, keyFn) {
+  const counts = {}
+  for (const item of items) {
+    const key = String(keyFn(item) || "unknown")
+    counts[key] = (counts[key] || 0) + 1
+  }
+  return counts
 }
 
 function normalizeCreditAmount(value, fallback) {

@@ -203,6 +203,51 @@ function positiveIntegerFromEnv(value, fallback) {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback
 }
 
+function effectiveOAuthRedirectUri() {
+  return oauthConfig.redirectUri || `${publicBaseUrl}/auth/oauth/callback`
+}
+
+function safeOAuthStatus() {
+  return {
+    enabled: oauthConfig.enabled,
+    provider: oauthConfig.provider,
+    issuer_configured: Boolean(oauthConfig.issuer),
+    explicit_endpoints_configured: Boolean(oauthConfig.authorizationEndpoint && oauthConfig.tokenEndpoint),
+    client_configured: Boolean(oauthConfig.clientID),
+    client_secret_configured: Boolean(oauthConfig.clientSecret),
+    redirect_uri: effectiveOAuthRedirectUri(),
+    scope: oauthConfig.scope,
+    initial_credits: oauthConfig.initialCredits,
+  }
+}
+
+function safeGatewayConfig() {
+  return {
+    public_base_url: publicBaseUrl,
+    base_path: basePath || "/",
+    state_backend: store.backend,
+    state: store.description || statePath,
+    admin_api_configured: Boolean(adminToken),
+    dev_approval_enabled: allowDevApproval,
+    anon_dev_enabled: allowAnonDev,
+    rate_limit: {
+      disabled: rateLimitDisabled,
+      per_minute: rateLimitPerMinute,
+    },
+    limits: {
+      max_body_bytes: maxBodyBytes,
+      max_admin_credit_grant: maxAdminCreditGrant,
+    },
+    upstream: {
+      mode: process.env.YOURSERVICE_UPSTREAM_MODE || "mock",
+      openai_base_url_configured: Boolean(process.env.UPSTREAM_OPENAI_BASE_URL),
+      openai_api_key_configured: Boolean(process.env.UPSTREAM_OPENAI_API_KEY),
+      fast_model_configured: Boolean(process.env.UPSTREAM_OPENAI_FAST_MODEL),
+      pro_model_configured: Boolean(process.env.UPSTREAM_OPENAI_PRO_MODEL),
+    },
+  }
+}
+
 async function readBody(req, { maxBytes = maxBodyBytes } = {}) {
   const contentLength = Number(req.headers["content-length"] || 0)
   if (contentLength > maxBytes) throwHttpError(413, "payload_too_large", `Request body may not exceed ${maxBytes} bytes.`)
@@ -637,6 +682,30 @@ async function handleAdminCreditGrant(req, res) {
   )
 }
 
+function handleAdminStatus(req, res) {
+  return sendJson(res, 200, {
+    object: "admin_status",
+    ok: true,
+    service: "yourservice-opencode-gateway",
+    time: new Date().toISOString(),
+    gateway: safeGatewayConfig(),
+    oauth: safeOAuthStatus(),
+    billing: {
+      ...billingStatus(billingConfig),
+      webhook_configured: stripeWebhookConfig.enabled,
+      success_url_configured: Boolean(billingConfig.successUrl),
+      cancel_url_configured: Boolean(billingConfig.cancelUrl),
+    },
+    models: listModels().map((model) => ({
+      id: model.id,
+      name: model.displayName || model.name || model.id,
+      context_tokens: model.contextTokens,
+      default_output_tokens: model.defaultOutputTokens,
+    })),
+    state: typeof store.summary === "function" ? store.summary() : {},
+  })
+}
+
 function remoteConfig(account) {
   const gatewayUrl = `${publicBaseUrl}/v1`
   return {
@@ -1045,6 +1114,7 @@ export const gatewayHandler = async (req, res) => {
           plans_count: billingConfig.plans.length,
           stripe_webhook_configured: stripeWebhookConfig.enabled,
         },
+        oauth: safeOAuthStatus(),
       })
     }
 
@@ -1077,6 +1147,7 @@ export const gatewayHandler = async (req, res) => {
     if (url.pathname.startsWith("/admin/")) {
       if (!adminToken) return sendError(res, 404, "not_found", "Admin API is disabled.")
       if (!authenticateAdmin(req)) return sendError(res, 401, "unauthorized", "Missing or invalid admin bearer token.")
+      if (req.method === "GET" && url.pathname === "/admin/status") return handleAdminStatus(req, res)
       if (req.method === "POST" && url.pathname === "/admin/credits/grant") return handleAdminCreditGrant(req, res)
     }
 

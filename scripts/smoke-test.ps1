@@ -130,6 +130,11 @@ try {
     if (-not $grantReplay.replayed) { throw "Credit grant replay was not idempotent" }
     if (($grantAfter.credits - $grantBefore.credits) -ne 25) { throw "Admin credit grant changed balance by the wrong amount" }
 
+    $adminStatus = Invoke-RestMethod "$base/admin/status" -Headers @{ Authorization = "Bearer $adminToken" }
+    if (-not $adminStatus.ok -or -not $adminStatus.gateway.admin_api_configured) { throw "Admin status endpoint did not report a configured admin API" }
+    if ($adminStatus.billing.provider -ne "stripe") { throw "Admin status endpoint did not include billing status" }
+    if ($adminStatus.state.users -lt 1 -or $adminStatus.models.Count -lt 1) { throw "Admin status endpoint did not include state/model summary" }
+
     $badDevice = Invoke-RestMethod "$base/auth/device/code" -Method "POST" -ContentType "application/json" -Body (@{ client_id = "opencode-cli" } | ConvertTo-Json)
     $badApproveBody = @{ user_code = $badDevice.user_code; token = "not-a-real-token" } | ConvertTo-Json
     $badApprove = Invoke-ExpectStatus -StatusCode 404 -Uri "$base/auth/device/approve" -Method "POST" -ContentType "application/json" -Body $badApproveBody
@@ -221,6 +226,7 @@ try {
         chatId = $chat.id
         creditGrant = $grant.credits
         creditGrantReplay = [bool]$grantReplay.replayed
+        adminStatus = [bool]$adminStatus.ok
         creditsCharged = $chat.yourservice.credits_charged
         creditsRemaining = $after.credits
         ledgerRows = $ledgerRows.Count

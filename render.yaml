@@ -9,17 +9,45 @@ services:
         value: 0.0.0.0
       - key: YOURSERVICE_PUBLIC_BASE_URL
         sync: false
+      - key: YOURSERVICE_BASE_PATH
+        sync: false
       - key: YOURSERVICE_DEV_TOKENS
         sync: false
       - key: YOURSERVICE_ADMIN_TOKEN
         sync: false
+      - key: YOURSERVICE_OAUTH_PROVIDER
+        sync: false
       - key: YOURSERVICE_OAUTH_ISSUER
+        sync: false
+      - key: YOURSERVICE_OAUTH_AUTHORIZATION_URL
+        sync: false
+      - key: YOURSERVICE_OAUTH_TOKEN_URL
+        sync: false
+      - key: YOURSERVICE_OAUTH_USERINFO_URL
         sync: false
       - key: YOURSERVICE_OAUTH_CLIENT_ID
         sync: false
       - key: YOURSERVICE_OAUTH_CLIENT_SECRET
         sync: false
+      - key: YOURSERVICE_OAUTH_REDIRECT_URI
+        sync: false
+      - key: YOURSERVICE_OAUTH_SCOPE
+        sync: false
+      - key: YOURSERVICE_OAUTH_INITIAL_CREDITS
+        sync: false
+      - key: YOURSERVICE_BILLING_PROVIDER
+        sync: false
+      - key: YOURSERVICE_BILLING_PLANS_JSON
+        sync: false
+      - key: YOURSERVICE_STRIPE_SECRET_KEY
+        sync: false
       - key: YOURSERVICE_STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: YOURSERVICE_BILLING_SUCCESS_URL
+        sync: false
+      - key: YOURSERVICE_BILLING_CANCEL_URL
+        sync: false
+      - key: YOURSERVICE_STRIPE_API_BASE_URL
         sync: false
       - key: YOURSERVICE_STATE_BACKEND
         value: postgres
