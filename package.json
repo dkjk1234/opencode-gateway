@@ -1,0 +1,16 @@
+{
+  "name": "yourservice-opencode-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "OpenAI-compatible gateway scaffold for branded OpenCode Desktop credit billing.",
+  "scripts": {
+    "start": "node src/server.mjs",
+    "check": "node --check src/server.mjs && node --check src/models.mjs && node --check src/state.mjs && node --check src/upstream.mjs && node --check scripts/upstream-proxy-test.mjs",
+    "smoke": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-test.ps1",
+    "test:upstream": "node scripts/upstream-proxy-test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
