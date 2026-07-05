@@ -6,9 +6,10 @@
   "description": "OpenAI-compatible gateway scaffold for branded OpenCode Desktop credit billing.",
   "scripts": {
     "start": "node src/server.mjs",
-    "check": "node --check src/server.mjs && node --check src/billing.mjs && node --check src/models.mjs && node --check src/oauth.mjs && node --check src/state.mjs && node --check src/stripe.mjs && node --check src/upstream.mjs && node --check scripts/upstream-proxy-test.mjs && node --check scripts/billing-test.mjs && node --check scripts/oauth-test.mjs",
+    "check": "node --check src/server.mjs && node --check src/billing.mjs && node --check src/models.mjs && node --check src/oauth.mjs && node --check src/state.mjs && node --check src/stripe.mjs && node --check src/upstream.mjs && node --check scripts/upstream-proxy-test.mjs && node --check scripts/billing-test.mjs && node --check scripts/oauth-test.mjs && node --check scripts/webhook-route-e2e.mjs",
     "smoke": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-test.ps1",
     "test:billing": "node scripts/billing-test.mjs",
+    "test:webhook": "node scripts/webhook-route-e2e.mjs",
     "test:upstream": "node scripts/upstream-proxy-test.mjs",
     "test:oauth": "node scripts/oauth-test.mjs"
   },

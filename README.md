@@ -334,10 +334,11 @@ cd C:\Users\USER\Documents\GitHub\CodexShare\opencode-gateway
 npm run check
 npm run test:oauth
 npm run test:upstream
+npm run test:webhook
 ./scripts/smoke-test.ps1
 ```
 
-The PowerShell smoke test covers health, models, bad device approval rejection, device-code approval, `/api/user`, `/api/orgs`, `/api/config`, admin credit grant idempotency, chat validation failures, request body size limits, chat completions, idempotency replay/conflict behavior, refresh token rotation, logout revocation, and credit debit/ledger rows. `npm run test:oauth` verifies OAuth redirect override behavior and confirms token exchange reuses the stored redirect URI. `npm run test:upstream` starts a fake local OpenAI-compatible server and verifies that `src/upstream.mjs` forwards requests without requiring a real provider key.
+The PowerShell smoke test covers health, models, bad device approval rejection, device-code approval, `/api/user`, `/api/orgs`, `/api/config`, admin credit grant idempotency, chat validation failures, request body size limits, chat completions, idempotency replay/conflict behavior, refresh token rotation, logout revocation, and credit debit/ledger rows. `npm run test:oauth` verifies OAuth redirect override behavior and confirms token exchange reuses the stored redirect URI. `npm run test:upstream` starts a fake local OpenAI-compatible server and verifies that `src/upstream.mjs` forwards requests without requiring a real provider key. `npm run test:webhook` starts a throwaway gateway process, posts a signed Stripe-style webhook to `/webhooks/stripe`, verifies invalid signatures are rejected, verifies credits and ledger rows are granted, and verifies webhook replay is idempotent.
 
 To verify the actual OpenCode account path against this gateway, run the E2E harness with a local OpenCode checkout:
 
