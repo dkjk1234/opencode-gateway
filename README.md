@@ -86,7 +86,7 @@ For the current VPS, the broader production verifier can read the non-printed de
 .\scripts\prod-e2e.ps1 -CreateOAuthLink -WaitForOAuthApproval -OAuthTimeoutSeconds 300
 ```
 
-Use `-RequireBillingReady` after Stripe keys and plans have been configured, and `-CreateCheckout` to create a real Stripe Checkout Session for the first configured plan.
+Use `-RequireBillingReady` after Stripe keys and plans have been configured, and `-CreateCheckout` to create a real Stripe Checkout Session for the first configured plan. For the final payment-to-credit proof, run `.\scripts\prod-e2e.ps1 -CreateCheckout -WaitForBillingCredit -RequireBillingCredit`, open the printed `checkout_url`, complete the Stripe checkout, and let the verifier wait until `/v1/credits` and `/v1/usage` show the Stripe credit ledger row.
 
 Common real-host environment variables:
 

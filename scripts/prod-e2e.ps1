@@ -13,6 +13,9 @@ param(
   [switch]$RequireOAuthApproval,
   [switch]$RequireBillingReady,
   [switch]$CreateCheckout,
+  [switch]$WaitForBillingCredit,
+  [int]$BillingTimeoutSeconds = 600,
+  [switch]$RequireBillingCredit,
   [string]$BillingPlanId
 )
 
@@ -144,6 +147,7 @@ $billing.stripe_secret_configured = [bool]$billingStatus.stripe.secret_configure
 $billing.webhook_configured = [bool]$billingStatus.webhook_configured
 $plans = Invoke-Json "$BaseUrl/billing/plans" "GET" $headers
 $billing.authenticated_plans_visible = [bool]($plans.data -and @($plans.data).Count -gt 0)
+$selectedPlan = $null
 
 if ($CreateCheckout) {
   if (-not $billing.checkout_configured) {
@@ -156,13 +160,57 @@ if ($CreateCheckout) {
         throw "CreateCheckout was requested but no BillingPlanId was supplied and no plans were returned."
       }
     }
+    if ($plans.data) {
+      $selectedPlan = @($plans.data) | Where-Object { $_.id -eq $BillingPlanId } | Select-Object -First 1
+    }
     $checkout = Invoke-Json "$BaseUrl/billing/checkout" "POST" ($headers + @{ "Idempotency-Key" = "prod-e2e-checkout-$([guid]::NewGuid().ToString('N'))" }) @{ plan_id = $BillingPlanId }
     $billing.checkout = "created"
+    $billing.plan_id = $BillingPlanId
+    if ($selectedPlan) {
+      $billing.expected_credit_delta = [int64]$selectedPlan.credits
+    }
     $billing.checkout_provider = $checkout.provider
     $billing.checkout_url = $checkout.checkout_url
   }
 } else {
   $billing.checkout = "not_requested"
+}
+
+if ($WaitForBillingCredit -or $RequireBillingCredit) {
+  if (-not $CreateCheckout) {
+    throw "WaitForBillingCredit requires -CreateCheckout so the script can create and report a checkout URL."
+  }
+  if ($billing.checkout -ne "created") {
+    $billing.credit_wait = "skipped_checkout_not_created"
+    $billing.credit_granted = $false
+  } else {
+    $billing.credit_wait = "waiting"
+    $billing.credit_before = [int64]$creditsAfter.credits
+    $expectedDelta = if ($selectedPlan -and $selectedPlan.credits) { [int64]$selectedPlan.credits } else { 1 }
+    $deadline = (Get-Date).AddSeconds([Math]::Max(5, $BillingTimeoutSeconds))
+    do {
+      Start-Sleep -Seconds 5
+      $currentCredits = Invoke-Json "$BaseUrl/v1/credits" "GET" $headers
+      $delta = [int64]$currentCredits.credits - [int64]$billing.credit_before
+      $billing.credit_current = [int64]$currentCredits.credits
+      $billing.credit_delta = $delta
+      if ($delta -ge $expectedDelta) {
+        $usageAfterBilling = Invoke-Json "$BaseUrl/v1/usage" "GET" $headers
+        $stripeRows = @($usageAfterBilling.data) | Where-Object { $_.type -eq "credit" -and $_.source -eq "stripe" -and [int64]$_.amount -ge $expectedDelta }
+        $billing.credit_granted = $true
+        $billing.credit_wait = "passed"
+        $billing.stripe_ledger_rows = @($stripeRows).Count
+        break
+      }
+    } while ((Get-Date) -lt $deadline)
+    if (-not $billing.credit_granted) {
+      $billing.credit_granted = $false
+      $billing.credit_wait = "timed_out"
+    }
+  }
+} else {
+  $billing.credit_granted = $false
+  $billing.credit_wait = "not_requested"
 }
 
 if ($CreateOAuthLink -or $WaitForOAuthApproval -or $RequireOAuthApproval) {
@@ -200,6 +248,7 @@ $requirements = [ordered]@{
   oauth_human_approved = [bool]$oauth.approved
   billing_checkout_ready = [bool]$billing.checkout_configured
   billing_webhook_ready = [bool]$billing.webhook_configured
+  billing_credit_e2e = [bool]$billing.credit_granted
 }
 
 $report = [ordered]@{
@@ -220,6 +269,9 @@ if ($RequireOAuthApproval) {
 }
 if ($RequireBillingReady) {
   $mustPass = $mustPass -and $requirements.billing_checkout_ready -and $requirements.billing_webhook_ready
+}
+if ($RequireBillingCredit) {
+  $mustPass = $mustPass -and $requirements.billing_credit_e2e
 }
 if (-not $mustPass) {
   exit 1
