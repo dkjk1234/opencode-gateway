@@ -163,6 +163,30 @@ The gateway writes these Stripe metadata fields into the Checkout Session and Pa
 }
 ```
 
+### VPS Stripe billing setup
+
+For the VPS deployment, keep Stripe secrets only in `/etc/opencode-gateway.env` and restart `opencode-gateway.service`.
+The helper below updates only billing-related keys, creates a timestamped backup of the existing env file, restarts the service, and avoids printing secret values:
+
+```powershell
+.\scripts\configure-vps-billing.ps1 `
+  -BillingPlansJson '[{"id":"starter","name":"Starter credits","credits":100000,"amount":990,"currency":"usd"}]'
+```
+
+For production, use a live Stripe secret key, configure the Stripe webhook endpoint to:
+
+```text
+https://llms.ai.kr/opencode-gateway/webhooks/stripe
+```
+
+and paste the resulting `whsec_...` webhook secret when prompted. Verify readiness without exposing secrets:
+
+```powershell
+.\scripts\prod-billing-readiness.ps1 -RequireWebhook
+```
+
+`checkout_configured=true`, `plans_count>0`, `stripe_secret_configured=true`, and `stripe_webhook_configured=true` means the server side is ready for authenticated desktop checkout.
+
 ## Real upstream proxy mode
 
 Mock mode is the default and is what the smoke test uses. For a real MVP, keep OpenCode pointed at this gateway and let the gateway call the provider:
