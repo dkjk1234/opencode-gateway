@@ -100,6 +100,8 @@ if ($billing.PSObject.Properties.Name -contains "cancel_url_configured") {
 $authenticatedPlansVisible = $false
 if ($plans -and $plans.plans) {
   $authenticatedPlansVisible = @($plans.plans).Count -gt 0
+} elseif ($plans -and $plans.data) {
+  $authenticatedPlansVisible = @($plans.data).Count -gt 0
 }
 
 $report = [ordered]@{
