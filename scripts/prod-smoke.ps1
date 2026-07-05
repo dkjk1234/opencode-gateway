@@ -38,7 +38,7 @@ $chat = Invoke-RestMethod "$base/v1/chat/completions" `
 [pscustomobject]@{
   health = [bool]$health.ok
   models = $models.data.Count
-  creditsRemaining = $credits.credits_remaining
+  credits = $credits.credits
   chatObject = $chat.object
   responsePreview = $chat.choices[0].message.content.Substring(0, [Math]::Min(80, $chat.choices[0].message.content.Length))
 } | ConvertTo-Json -Depth 6

@@ -76,6 +76,18 @@ Production-ish smoke test against any deployed URL:
 .\scripts\prod-smoke.ps1 -BaseUrl "https://your-gateway.example.com" -Token "dev-token"
 ```
 
+For the current VPS, the broader production verifier can read the non-printed dev/admin tokens over SSH, prove health/Postgres/upstream/model/chat paths, report billing readiness, and optionally generate a human Google OAuth approval link:
+
+```powershell
+.\scripts\prod-e2e.ps1
+
+.\scripts\prod-e2e.ps1 -CreateOAuthLink
+
+.\scripts\prod-e2e.ps1 -CreateOAuthLink -WaitForOAuthApproval -OAuthTimeoutSeconds 300
+```
+
+Use `-RequireBillingReady` after Stripe keys and plans have been configured, and `-CreateCheckout` to create a real Stripe Checkout Session for the first configured plan.
+
 Common real-host environment variables:
 
 | Variable | Purpose |
