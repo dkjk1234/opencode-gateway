@@ -96,6 +96,18 @@ The final operator readiness report also checks GitHub `main`, the VPS checkout,
 
 Use `-VerifyInstallerSha` when you want it to download the full installer and compare the SHA-256 from the manifest, and `-RequireAll` after OAuth and Stripe are truly connected.
 
+For a guided final connection runbook, use:
+
+```powershell
+.\scripts\operator-connect.ps1 -VerifyInstallerSha
+
+.\scripts\operator-connect.ps1 -WaitForOAuthApproval
+
+.\scripts\operator-connect.ps1 -ConfigureStripe -CreateCheckout -WaitForBillingCredit -RequireAll
+```
+
+The operator runner prints a fresh Google approval URL, can apply Stripe env values through the safe VPS helper, can create a checkout session, and finishes by embedding the final readiness report.
+
 Common real-host environment variables:
 
 | Variable | Purpose |
