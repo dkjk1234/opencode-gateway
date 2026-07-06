@@ -9,7 +9,7 @@ It is intentionally server-side: user auth, credit accounting, model routing, an
 - `GET /health`
 - `POST /auth/device/code` / `POST /auth/device/token` / `POST /auth/device/approve`
 - `POST /auth/logout` / `POST /auth/revoke`
-- `GET /activate` local development approval page
+- `GET /login` / `GET /activate` maintainable Google OAuth device-login frontend
 - `GET /api/user` / `GET /api/orgs` / `GET /api/config` OpenCode console-compatible account/config endpoints
 - `GET /billing/status` / `GET /billing/plans` / `POST /billing/checkout`
 - `GET /v1/models`
@@ -135,7 +135,7 @@ Common real-host environment variables:
 
 The gateway now has real integration seams for the three server-side systems the desktop app should never own directly:
 
-- OAuth/OIDC device approval: when `YOURSERVICE_OAUTH_CLIENT_ID` plus either `YOURSERVICE_OAUTH_ISSUER` or explicit endpoint URLs are configured, `/activate` shows a `Continue with OAuth login` link. The callback upserts the external identity, creates/updates the user/org, approves the OpenCode device code, and lets OpenCode poll `/auth/device/token` for a YourService token.
+- OAuth/OIDC device approval: when `YOURSERVICE_OAUTH_CLIENT_ID` plus either `YOURSERVICE_OAUTH_ISSUER` or explicit endpoint URLs are configured, `/login` and `/activate` render a lightweight Google OAuth login frontend. The callback upserts the external identity, creates/updates the user/org, approves the OpenCode device code, and lets OpenCode poll `/auth/device/token` for a YourService token.
 - Stripe checkout and credit webhooks: `POST /billing/checkout` creates an authenticated Stripe Checkout Session from `YOURSERVICE_BILLING_PLANS_JSON` using the server-side `YOURSERVICE_STRIPE_SECRET_KEY`. `POST /webhooks/stripe` verifies the Stripe `v1` webhook signature with `YOURSERVICE_STRIPE_WEBHOOK_SECRET`, idempotently records the event, and credits the target account when supported events include metadata such as `yourservice_user_id`/`yourservice_org_id` or `yourservice_token` plus `yourservice_credits`.
 - PostgreSQL state backend: set `YOURSERVICE_STATE_BACKEND=postgres` plus `DATABASE_URL` to persist the gateway state in the `gateway_state` JSONB snapshot table. `C:\Users\USER\Documents\GitHub\CodexShare\opencode-gateway\schema\postgres.sql` also defines the target normalized durable tables for users, orgs, identities, tokens, device codes, OAuth states, idempotency keys, billing events, and the credit ledger.
 
@@ -152,7 +152,8 @@ Example OAuth/OIDC env:
 
 ```powershell
 $env:YOURSERVICE_PUBLIC_BASE_URL = "https://your-gateway.example.com"
-$env:YOURSERVICE_OAUTH_ISSUER = "https://accounts.example.com"
+$env:YOURSERVICE_OAUTH_PROVIDER = "google"
+$env:YOURSERVICE_OAUTH_ISSUER = "https://accounts.google.com"
 $env:YOURSERVICE_OAUTH_CLIENT_ID = "..."
 $env:YOURSERVICE_OAUTH_CLIENT_SECRET = "..."
 $env:YOURSERVICE_OAUTH_REDIRECT_URI = "https://your-gateway.example.com/auth/oauth/callback"
@@ -296,19 +297,37 @@ Invoke-RestMethod http://127.0.0.1:8788/admin/status `
 
 `/admin/status` intentionally reports booleans, counts, effective OAuth redirect URI, state backend, billing readiness, and model metadata without returning tokens, API keys, client secrets, or raw customer credentials.
 
-### llms.ai.kr OAuth relay deployment note
+### llms.ai.kr Google OAuth deployment note
 
-For the `llms.ai.kr` VPS deployment, the existing Google OAuth client already allows:
+For the `llms.ai.kr` VPS deployment, prefer registering the gateway callback directly in Google Cloud:
+
+```text
+https://llms.ai.kr/opencode-gateway/auth/oauth/callback
+```
+
+Then set:
+
+```env
+YOURSERVICE_PUBLIC_BASE_URL=https://llms.ai.kr/opencode-gateway
+YOURSERVICE_BASE_PATH=/opencode-gateway
+YOURSERVICE_OAUTH_PROVIDER=google
+YOURSERVICE_OAUTH_ISSUER=https://accounts.google.com
+YOURSERVICE_OAUTH_REDIRECT_URI=https://llms.ai.kr/opencode-gateway/auth/oauth/callback
+```
+
+If only the existing ChatGPT callback is registered:
 
 ```text
 https://llms.ai.kr/chatgpt/auth/google/callback
 ```
 
-The OpenCode gateway can therefore set:
+the OpenCode gateway can instead set:
 
 ```env
 YOURSERVICE_PUBLIC_BASE_URL=https://llms.ai.kr/opencode-gateway
 YOURSERVICE_BASE_PATH=/opencode-gateway
+YOURSERVICE_OAUTH_PROVIDER=google
+YOURSERVICE_OAUTH_ISSUER=https://accounts.google.com
 YOURSERVICE_OAUTH_REDIRECT_URI=https://llms.ai.kr/chatgpt/auth/google/callback
 ```
 
@@ -374,5 +393,5 @@ That harness starts a temporary gateway, runs `opencode console login` through t
 1. Replace the Postgres JSONB snapshot backend with row-level writes to the normalized tables in `schema/postgres.sql` before high-concurrency multi-instance deployment.
 2. Add explicit reserve/commit/release rows for true provider streaming and mid-stream failure refunds.
 3. Upgrade `src/upstream.mjs` from gateway-buffered upstream calls to true streaming passthrough and add more provider-specific adapters where needed.
-4. Replace the fallback token-entry approval form with a polished production login/plan-selection UI.
+4. Add a production credit top-up UI backed by the chosen Korea-supported payment adapter or manual admin grant workflow.
 5. Add structured audit logs and expand the billing admin UI around the existing Stripe checkout/webhook MVP.

@@ -5,6 +5,7 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto"
 import { calculateCredits, estimateTokens, getModel, hasModel, listModels, providerModelConfig } from "./models.mjs"
 import { billingConfigFromEnv, billingStatus, createStripeCheckoutSession, publicBillingPlans, resolveBillingPlan } from "./billing.mjs"
 import { completeOAuthCallback, createOAuthAuthorization, oauthConfigFromEnv } from "./oauth.mjs"
+import { renderBillingReturnPage, renderLoginPage, renderOAuthErrorPage, renderOAuthSuccessPage } from "./frontend.mjs"
 import { openGatewayState } from "./state.mjs"
 import { stripeEventToCreditGrant, stripeWebhookConfigFromEnv, verifyStripeSignature } from "./stripe.mjs"
 import { boundedOutputTokens, callOpenAICompatibleChat, resolveChatUpstream } from "./upstream.mjs"
@@ -798,7 +799,15 @@ async function handleOAuthStart(req, res, url) {
     await store.save()
     return redirect(res, authorizationUrl)
   } catch (error) {
-    return sendError(res, error.statusCode || 500, readErrorCode(error, "oauth_start_failed"), error.message)
+    return sendHtml(
+      res,
+      error.statusCode || 500,
+      renderOAuthErrorPage({
+        publicBaseUrl,
+        code: readErrorCode(error, "oauth_start_failed"),
+        message: error.message,
+      }),
+    )
   }
 }
 
@@ -811,14 +820,18 @@ async function handleOAuthCallback(req, res, url) {
       query: url.searchParams,
     })
     await store.save()
-    return sendHtml(
-      res,
-      200,
-      `<h1>Approved</h1><p>${escapeHtml(result.account.user.email)} is now connected. You can return to OpenCode.</p>`,
-    )
+    return sendHtml(res, 200, renderOAuthSuccessPage({ publicBaseUrl, email: result.account.user.email }))
   } catch (error) {
     await store.save()
-    return sendError(res, error.statusCode || 500, readErrorCode(error, "oauth_callback_failed"), error.message)
+    return sendHtml(
+      res,
+      error.statusCode || 500,
+      renderOAuthErrorPage({
+        publicBaseUrl,
+        code: readErrorCode(error, "oauth_callback_failed"),
+        message: error.message,
+      }),
+    )
   }
 }
 
@@ -1054,22 +1067,13 @@ async function handleStripeWebhook(req, res) {
 
 function activationPage(url) {
   const userCode = url.searchParams.get("user_code") || ""
-  const oauthBlock = oauthConfig.enabled
-    ? `<p><a href="${publicBaseUrl}/auth/oauth/start?user_code=${encodeURIComponent(userCode)}">Continue with OAuth login</a></p>`
-    : ""
-  return `<!doctype html>
-<html><head><meta charset="utf-8"><title>YourService device login</title></head>
-<body style="font-family: system-ui; max-width: 680px; margin: 48px auto; line-height: 1.5;">
-<h1>YourService device login</h1>
-<p>Approve OpenCode access for code <strong>${escapeHtml(userCode)}</strong>.</p>
-${oauthBlock}
-<form method="post" action="${publicBaseUrl}/activate?user_code=${encodeURIComponent(userCode)}">
-  <input type="hidden" name="user_code" value="${escapeHtml(userCode)}" />
-  <label>Account token <input name="token" value="" placeholder="dev-token" style="width: 280px" /></label>
-  <button type="submit">Approve</button>
-</form>
-<p style="color:#666">This is a local development approval page. Production should require real login.</p>
-</body></html>`
+  return renderLoginPage({
+    publicBaseUrl,
+    oauth: safeOAuthStatus(),
+    userCode,
+    error: url.searchParams.get("error") || "",
+    devApprovalEnabled: allowDevApproval,
+  })
 }
 
 function billingReturnPage(url) {
@@ -1079,17 +1083,7 @@ function billingReturnPage(url) {
   const message = success
     ? "If the Stripe webhook is configured, credits will be applied to your account automatically. You can return to OpenCode."
     : "No payment was completed. You can return to OpenCode and try again."
-  return `<!doctype html>
-<html><head><meta charset="utf-8"><title>YourService ${escapeHtml(title)}</title></head>
-<body style="font-family: system-ui; max-width: 680px; margin: 48px auto; line-height: 1.5;">
-<h1>${escapeHtml(title)}</h1>
-<p>${escapeHtml(message)}</p>
-${sessionID ? `<p style="color:#666">Checkout session: <code>${escapeHtml(sessionID)}</code></p>` : ""}
-</body></html>`
-}
-
-function escapeHtml(value) {
-  return String(value).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char])
+  return renderBillingReturnPage({ title, message, sessionID })
 }
 
 export const gatewayHandler = async (req, res) => {
@@ -1100,6 +1094,10 @@ export const gatewayHandler = async (req, res) => {
     url.pathname = routedPath
 
     if (req.method === "OPTIONS") return sendJson(res, 204, {})
+
+    if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/login")) {
+      return sendHtml(res, 200, activationPage(url))
+    }
 
     if (req.method === "GET" && url.pathname === "/health") {
       return sendJson(res, 200, {
