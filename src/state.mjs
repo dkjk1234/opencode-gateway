@@ -184,7 +184,21 @@ export class GatewayState {
     return device
   }
 
-  issueToken(userID, orgID) {
+  issueApiToken(userID, orgID, source = "device_oauth") {
+    const token = `ys_api_${randomUUID()}`
+    const now = Date.now()
+    const tokenFingerprint = fingerprintToken(token)
+    this.state.apiTokens[token] = { userID, orgID, tokenFingerprint, createdAt: now, updatedAt: now, source }
+    this.state.accessTokens[token] = { userID, orgID, expiresAt: null, api: true, tokenFingerprint }
+    this.reconcileUserLedger(userID, orgID, {
+      tokenFingerprint,
+      source,
+      reason: "api token reconciliation",
+    })
+    return token
+  }
+
+  issueToken(userID, orgID, options = {}) {
     const accessToken = `ys_access_${randomUUID()}`
     const refreshToken = `ys_refresh_${randomUUID()}`
     const expiresIn = 3600
@@ -197,7 +211,13 @@ export class GatewayState {
       createdAt: Date.now(),
       expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000,
     }
-    return { access_token: accessToken, refresh_token: refreshToken, token_type: "Bearer", expires_in: expiresIn }
+    return {
+      access_token: accessToken,
+      refresh_token: refreshToken,
+      token_type: "Bearer",
+      expires_in: expiresIn,
+      ...(options.includeApiToken ? { api_token: this.issueApiToken(userID, orgID) } : {}),
+    }
   }
 
   refresh(refreshToken) {
@@ -316,7 +336,7 @@ export class GatewayState {
     if (device.expiresAt <= Date.now()) return { error: "expired_token", error_description: "Device code expired." }
     if (device.status === "denied") return { error: "access_denied", error_description: "Authorization denied." }
     if (device.status !== "approved") return { error: "authorization_pending", error_description: "Authorization is pending." }
-    return this.issueToken(device.userID, device.orgID)
+    return this.issueToken(device.userID, device.orgID, { includeApiToken: true })
   }
 
   getRequest(idempotencyKey) {
